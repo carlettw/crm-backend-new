@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from sqlalchemy import select
 
 from app.api.v1 import auth, boss, currency, jobs, messages, superops, tours, users
@@ -36,6 +37,7 @@ app.include_router(auth.router, prefix="/api/v1")
 for r in (users.router, tours.router, jobs.router, boss.router, messages.router, superops.router, currency.router):
     app.include_router(r, prefix="/api/v1")
 
+app.add_middleware(GZipMiddleware, minimum_size=800)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[o.strip() for o in settings.cors_origins.split(",") if o.strip()],
