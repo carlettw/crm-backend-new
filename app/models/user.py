@@ -29,13 +29,13 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     boss_profile: Mapped["BossProfile | None"] = relationship(
-        back_populates="user", uselist=False, lazy="selectin", cascade="all, delete-orphan"
+        back_populates="user", uselist=False, lazy="joined", cascade="all, delete-orphan"
     )
     guide_profile: Mapped["GuideProfile | None"] = relationship(
-        back_populates="user", uselist=False, lazy="selectin", cascade="all, delete-orphan"
+        back_populates="user", uselist=False, lazy="joined", cascade="all, delete-orphan"
     )
     driver_profile: Mapped["DriverProfile | None"] = relationship(
-        back_populates="user", uselist=False, lazy="selectin", cascade="all, delete-orphan"
+        back_populates="user", uselist=False, lazy="joined", cascade="all, delete-orphan"
     )
 
     # Pydantic (from_attributes) uchun qulay xossalar
