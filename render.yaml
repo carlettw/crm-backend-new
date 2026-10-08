@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: tur-boshqaruv-api
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL        # Supabase Session pooler (postgresql+asyncpg://...)
+        sync: false
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DB_SSL
+        value: "true"
+      - key: AUTO_CREATE_TABLES
+        value: "false"
+      - key: CORS_ORIGINS        # frontend manzili, masalan https://tur.netlify.app
+        sync: false
+      - key: FIRST_SUPERADMIN_USERNAME
+        value: superadmin
+      - key: FIRST_SUPERADMIN_PHONE
+        value: "+998900000000"
+      - key: FIRST_SUPERADMIN_PASSWORD
+        sync: false
