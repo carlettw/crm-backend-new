@@ -95,8 +95,8 @@ class Tour(Base):
     stops: Mapped[list["TourStop"]] = relationship(
         lazy="selectin", order_by="TourStop.position", cascade="all, delete-orphan"
     )
-    guide: Mapped[User | None] = relationship(foreign_keys=[guide_id], lazy="selectin")
-    driver: Mapped[User | None] = relationship(foreign_keys=[driver_id], lazy="selectin")
+    guide: Mapped[User | None] = relationship(foreign_keys=[guide_id], lazy="joined")
+    driver: Mapped[User | None] = relationship(foreign_keys=[driver_id], lazy="joined")
 
     @property
     def guide_name(self):
@@ -134,7 +134,7 @@ class TourApplication(Base):
     status: Mapped[AppStatus] = mapped_column(_enum(AppStatus), default=AppStatus.pending)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
-    user: Mapped[User] = relationship(lazy="selectin")
+    user: Mapped[User] = relationship(lazy="joined")
 
 
 class TourCancellation(Base):
@@ -204,7 +204,7 @@ class Payment(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    user: Mapped[User] = relationship(foreign_keys=[user_id], lazy="selectin")
+    user: Mapped[User] = relationship(foreign_keys=[user_id], lazy="joined")
 
 
 class Message(Base):
@@ -217,7 +217,7 @@ class Message(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    sender: Mapped[User | None] = relationship(foreign_keys=[sender_id], lazy="selectin")
+    sender: Mapped[User | None] = relationship(foreign_keys=[sender_id], lazy="joined")
 
     @property
     def sender_name(self):
