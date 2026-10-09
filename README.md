@@ -19,4 +19,3 @@ Admin boshliq ishlariga `?boss_id=` bilan kiradi (`GET /me/bosses` ro'yxatidan t
 - Haftalik to'lov: boshliq `GET /boss/payouts/due` → `POST /boss/payouts/pay` → oluvchi `POST /payments/{id}/confirm`.
 - Super admin faqat `GET /super/share` (o'z ulushi) ni ko'radi; admin aylanmani ko'rmaydi.
 - Vaqt: kiritishda tz-siz bo'lsa Toshkent vaqti deb olinadi, bazada UTC.
-"# crm-backend-new" 

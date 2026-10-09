@@ -12,7 +12,11 @@ def make_engine(url: str | None = None):
         args["prepared_statement_cache_size"] = 0
         if settings.db_ssl:
             args["ssl"] = "require"
-    return create_async_engine(url, connect_args=args, pool_pre_ping=True)
+    kw = {}
+    if url.startswith("postgresql"):
+        # pre_ping har so'rovga qo'shimcha bazaga borib-kelish qo'shadi; o'rniga eski ulanishlar yangilanadi
+        kw = dict(pool_size=5, max_overflow=5, pool_recycle=300)
+    return create_async_engine(url, connect_args=args, **kw)
 
 
 engine = make_engine()

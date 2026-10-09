@@ -48,7 +48,7 @@ async def create_user(data: UserCreate, _: User = Depends(super_only), db: Async
 @router.get("/users", response_model=UserListOut)
 async def list_users(
     search: str | None = Query(None, description="Ism, telefon yoki username bo'yicha"),
-    role: Role | None = None,
+    role: str | None = None,
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     _: User = Depends(super_only),
@@ -56,7 +56,10 @@ async def list_users(
 ):
     q = select(User)
     if role:
-        q = q.where(User.role == role)
+        try:
+            q = q.where(User.role == Role(role))
+        except ValueError:
+            raise HTTPException(400, "Noma'lum rol")
     if search:
         like = f"%{search}%"
         q = q.where(or_(User.full_name.ilike(like), User.phone.ilike(like), User.username.ilike(like)))
@@ -94,12 +97,12 @@ async def reset_password(user_id: int, data: ResetPasswordIn, _: User = Depends(
 async def get_rates(_: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     """3-7 darajalar: amount — o'zi uchun belgilangan, effective — amaldagi eng kam summa
     (pastki darajalardan meros bo'lib o'tadi)."""
-    from app.services.common import effective_rate
     own = {r.level: r.amount for r in (await db.execute(select(LevelRate))).scalars().all()}
-    out = []
-    for lvl in range(3, 8):
-        eff = await effective_rate(db, lvl)
-        out.append({"level": lvl, "amount": own.get(lvl), "effective": eff[0] if eff else None})
+    out, top = [], None
+    for lvl in range(3, 8):  # amaldagi summa: o'zi va pastki darajalarning eng kattasi
+        if own.get(lvl) is not None:
+            top = max(top or 0, own[lvl])
+        out.append({"level": lvl, "amount": own.get(lvl), "effective": top})
     return out
 
 
