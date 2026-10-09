@@ -1,6 +1,10 @@
 FROM python:3.12-slim
 WORKDIR /code
+<<<<<<< HEAD
 ENV PYTHONUNBUFFERED=1 PYTHONPATH=/code
+=======
+   ENV PYTHONUNBUFFERED=1 PYTHONPATH=/code
+>>>>>>> 5876858963b8559a2dbd6fd188c6194280dbf876
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
