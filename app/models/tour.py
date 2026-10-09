@@ -120,6 +120,8 @@ class TourStop(Base):
     address: Mapped[str] = mapped_column(String(255))
     duration_minutes: Mapped[int] = mapped_column(Integer, default=0)
     description: Mapped[str] = mapped_column(Text, default="")
+    location_url: Mapped[str | None] = mapped_column(String(500), nullable=True)  # xarita havolasi
+    arrival_time: Mapped[str | None] = mapped_column(String(5), nullable=True)    # "HH:MM"
 
 
 class TourApplication(Base):

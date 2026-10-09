@@ -128,8 +128,11 @@ async def driver_list(
     q = select(Tour).where(Tour.status.in_([TourStatus.open, TourStatus.ready, TourStatus.completed]))
     if state == "free":
         q = q.where(Tour.status.in_([TourStatus.open, TourStatus.ready]), Tour.driver_id.is_(None), Tour.start_at > now())
-    else:
-        q = q.where(Tour.driver_id == user.id)
+    else:  # o'zi olgan ishlar + admin tasdig'ini kutayotgan arizalari
+        pend = select(TourApplication.tour_id).where(
+            TourApplication.user_id == user.id, TourApplication.kind == AppKind.driver,
+            TourApplication.status == AppStatus.pending)
+        q = q.where(or_(Tour.driver_id == user.id, Tour.id.in_(pend)))
     if day != "all":
         from datetime import timedelta as td
         d = today_local() + (td(days=1) if day == "tomorrow" else td(0))
@@ -143,6 +146,7 @@ async def driver_list(
     for t in tours:
         v = job_view(t, "driver", detail=t.driver_id == user.id)
         v["applied"] = t.id in applied
+        v["pending"] = t.driver_id != user.id and t.id in applied  # admin tasdig'i kutilmoqda
         out.append(v)
     return out
 

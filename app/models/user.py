@@ -19,7 +19,8 @@ class User(Base):
     __tablename__ = "users"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    phone: Mapped[str] = mapped_column(String(20), unique=True, index=True)
+    # telefon takrorlanishi mumkin (bir odam ham gid, ham haydovchi bo'lishi mumkin); kirish username orqali
+    phone: Mapped[str] = mapped_column(String(20), index=True)
     # username super admin tomonidan beriladi va o'zgarmaydi
     username: Mapped[str] = mapped_column(String(32), unique=True, index=True)
     full_name: Mapped[str] = mapped_column(String(120), index=True)

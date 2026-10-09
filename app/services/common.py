@@ -83,7 +83,7 @@ def fmt_dt(dt) -> str:
 
 
 def offer_text(t: Tour, role: str, amount: int) -> str:
-    route = " → ".join(s.address for s in t.stops) or t.pickup_address
+    route = " → ".join(f"{s.address} ({s.arrival_time})" if s.arrival_time else s.address for s in t.stops) or t.pickup_address
     note = t.guide_note if role == "guide" else t.driver_note
     extra = f"\nOdam soni: {t.pax_count}" if role == "driver" else ""
     return (

@@ -10,10 +10,6 @@ from app.core.config import settings
 from app.db.base import Base
 from app.db.session import make_engine
 import app.models  # noqa: F401
-import os
-import sys
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 target_metadata = Base.metadata
 

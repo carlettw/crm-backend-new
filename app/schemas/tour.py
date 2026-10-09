@@ -12,6 +12,8 @@ class StopIO(BaseModel):
     address: str = Field(min_length=1, max_length=255)
     duration_minutes: int = Field(0, ge=0)
     description: str = ""
+    location_url: str | None = Field(None, max_length=500)
+    arrival_time: str | None = Field(None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
 
 
 class TourBase(BaseModel):

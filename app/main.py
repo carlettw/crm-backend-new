@@ -41,6 +41,8 @@ app.add_middleware(GZipMiddleware, minimum_size=800)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[o.strip() for o in settings.cors_origins.split(",") if o.strip()],
+    # lokal sinov uchun istalgan port (localhost / 127.0.0.1) ruxsat etiladi
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
     allow_methods=["*"], allow_headers=["*"],
 )
 

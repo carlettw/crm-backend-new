@@ -24,7 +24,8 @@ router = APIRouter(prefix="/tours", tags=["tours (admin/boshliq)"])
 
 def _stops(items):
     return [TourStop(position=i, address=s.address, duration_minutes=s.duration_minutes,
-                     description=s.description) for i, s in enumerate(items)]
+                     description=s.description, location_url=s.location_url, arrival_time=s.arrival_time)
+            for i, s in enumerate(items)]
 
 
 @router.post("", response_model=TourOut, status_code=201)
@@ -119,7 +120,8 @@ async def clone_tour(tour_id: int, data: CloneIn, ctx: Ctx = Depends(admin_ctx),
         t.stops = _stops(data.stops)
     else:
         t.stops = [TourStop(position=s.position, address=s.address, duration_minutes=s.duration_minutes,
-                            description=s.description) for s in src.stops]
+                            description=s.description, location_url=s.location_url, arrival_time=s.arrival_time)
+                   for s in src.stops]
     db.add(t)
     await db.commit()
     await db.refresh(t)

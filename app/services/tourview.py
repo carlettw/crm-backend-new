@@ -12,8 +12,8 @@ def job_view(t: Tour, role: str, level: int | None = None, detail: bool = False)
     v = {
         "id": t.id, "title": t.title, "description": t.description, "status": t.status.value,
         "start_at": t.start_at, "pickup_address": t.pickup_address,
-        "stops": [{"address": s.address, "duration_minutes": s.duration_minutes, "description": s.description}
-                  for s in t.stops],
+        "stops": [{"address": s.address, "duration_minutes": s.duration_minutes, "description": s.description,
+                   "location_url": s.location_url, "arrival_time": s.arrival_time} for s in t.stops],
         "amount": amount, "note": note, "pax_count": t.pax_count,
         "guide_confirmed": bool(t.guide_confirmed_at), "driver_confirmed": bool(t.driver_confirmed_at),
     }

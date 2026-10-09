@@ -40,7 +40,7 @@ async def create_user(data: UserCreate, _: User = Depends(super_only), db: Async
         await db.commit()
     except IntegrityError:
         await db.rollback()
-        raise HTTPException(status.HTTP_409_CONFLICT, "Bu telefon yoki username band")
+        raise HTTPException(status.HTTP_409_CONFLICT, "Bu username band (telefon raqam esa takrorlanishi mumkin)")
     await db.refresh(user)
     return user
 
