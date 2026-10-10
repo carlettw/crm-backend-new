@@ -2,7 +2,7 @@
 LANGUAGES = {
     "uz": "O'zbek", "ru": "Rus", "en": "Ingliz", "de": "Nemis", "fr": "Frantsuz", "es": "Ispan",
     "it": "Italyan", "pt": "Portugal", "zh": "Xitoy", "ja": "Yapon", "ko": "Koreys", "tr": "Turk",
-    "ar": "Arab", "fa": "Fors", "hi": "Hind", "kk": "Qozoq",
+    "ar": "Arab", "fa": "Fors", "hi": "Hind", "kk": "Qozoq", "tg": "Tojik",
 }
 
 
