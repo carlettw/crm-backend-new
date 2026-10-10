@@ -15,6 +15,45 @@ router = APIRouter(tags=["users"])
 super_only = require_roles(Role.super_admin)
 
 
+LEVEL_TEXT = {
+    1: ("Amaliyotchi", "Real gidga yordamchi bo'lib 1 ta turga chiqasiz va suhbatdan o'tasiz. Haq to'lanmaydi."),
+    2: ("Real amaliyotchi", "5 ta tekin turga o'zingiz gid sifatida chiqasiz. Haq to'lanmaydi."),
+    3: ("Maoshli gid", "Har tur uchun belgilangan summa to'lanadi. 15 ta turdan keyin 4-darajaga o'tasiz."),
+    4: ("Tajribali gid", "Belgilangan summa to'lanadi. O'zingizdan pastroq darajalar uchun yuborilgan turlarni ham ko'rib, rozi bo'lsangiz olasiz."),
+    5: ("Katta gid", "4-daraja kabi ishlaydi, summa yuqoriroq. Yuqoriga o'tkazishni super admin hal qiladi."),
+    6: ("Mutaxassis gid", "4-daraja kabi ishlaydi, summa yuqoriroq. Yuqoriga o'tkazishni super admin hal qiladi."),
+    7: ("Yetakchi gid", "Eng yuqori daraja. Pastroq darajalar uchun yuborilgan turlarni ham olishingiz mumkin."),
+}
+
+
+@router.get("/me/level-info")
+async def level_info(user: User = Depends(require_roles(Role.guide)), db: AsyncSession = Depends(get_db)):
+    """Gidning darajasi, daraja summasi, keyingi darajagacha progress va barcha darajalar haqida ma'lumot."""
+    gp = user.guide_profile
+    own = {r.level: r.amount for r in (await db.execute(select(LevelRate))).scalars().all()}
+    levels, top = [], None
+    for lvl in range(1, 8):
+        if lvl >= 3 and own.get(lvl) is not None:
+            top = max(top or 0, own[lvl])  # summasi yo'q daraja pastkisidan meros oladi
+        title, info = LEVEL_TEXT[lvl]
+        levels.append({"level": lvl, "title": title, "info": info, "rate": 0 if lvl <= 2 else top,
+                       "state": "done" if lvl < gp.level else "current" if lvl == gp.level else "locked"})
+    if gp.level == 1:
+        nxt = {"level": 2, "kind": "checklist", "done": int(gp.practice_done) + int(gp.interview_passed), "need": 2,
+               "practice_done": gp.practice_done, "interview_passed": gp.interview_passed}
+    elif gp.level == 2:
+        nxt = {"level": 3, "kind": "tours", "done": gp.level_tours, "need": 5}
+    elif gp.level == 3:
+        nxt = {"level": 4, "kind": "tours", "done": gp.level_tours, "need": 15}
+    elif gp.level < 7:
+        nxt = {"level": gp.level + 1, "kind": "manual"}
+    else:
+        nxt = None
+    cur = levels[gp.level - 1]
+    return {"level": gp.level, "title": cur["title"], "info": cur["info"], "rate": cur["rate"],
+            "completed_tours": gp.completed_tours, "level_tours": gp.level_tours, "next": nxt, "levels": levels}
+
+
 @router.get("/languages")
 async def languages(_: User = Depends(get_current_user)):
     from app.core.languages import LANGUAGES
