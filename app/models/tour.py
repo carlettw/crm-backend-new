@@ -53,6 +53,7 @@ class Tour(Base):
     created_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
     title: Mapped[str] = mapped_column(String(160), index=True)
     description: Mapped[str] = mapped_column(Text, default="")
+    language: Mapped[str] = mapped_column(String(5), server_default="uz")  # tur tili
     pickup_address: Mapped[str] = mapped_column(String(255), default="")
     start_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
 

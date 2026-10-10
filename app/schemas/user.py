@@ -4,6 +4,7 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.models.user import Role
+from app.core.languages import clean_languages
 from app.schemas.auth import normalize_phone
 
 
@@ -17,6 +18,12 @@ class UserCreate(BaseModel):
     boss_percent: float | None = Field(default=None, ge=0, le=100)
     guide_level: int | None = Field(default=None, ge=1, le=7)
     car_model: str | None = Field(default=None, max_length=80)
+    languages: list[str] | None = None  # gid uchun majburiy
+
+    @field_validator("languages")
+    @classmethod
+    def _langs(cls, v):
+        return clean_languages(v) if v is not None else v
 
     @field_validator("phone")
     @classmethod
@@ -38,6 +45,8 @@ class UserCreate(BaseModel):
             raise ValueError("Boshliq uchun boss_percent majburiy")
         if self.role == Role.guide and self.guide_level is None:
             raise ValueError("Gid uchun guide_level majburiy")
+        if self.role == Role.guide and not self.languages:
+            raise ValueError("Gid uchun kamida bitta til tanlang")
         if self.role == Role.driver and not self.car_model:
             raise ValueError("Haydovchi uchun car_model (mashina rusumi) majburiy")
         return self
@@ -56,6 +65,7 @@ class UserOut(BaseModel):
     boss_percent: float | None = None
     guide_level: int | None = None
     car_model: str | None = None
+    languages: list[str] | None = None
 
 
 class UserListOut(BaseModel):
@@ -79,3 +89,12 @@ class LevelRateOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     level: int
     amount: int
+
+
+class LangsIn(BaseModel):
+    languages: list[str] = Field(min_length=1)
+
+    @field_validator("languages")
+    @classmethod
+    def _langs(cls, v):
+        return clean_languages(v)

@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.languages import LANGUAGES
 from app.core.ctx import Ctx, admin_ctx, get_tour_or_404, read_ctx
 from app.core.timeutil import aware, now
 from app.db.session import get_db
@@ -104,7 +105,7 @@ async def delete_tour(tour_id: int, ctx: Ctx = Depends(admin_ctx), db: AsyncSess
 async def clone_tour(tour_id: int, data: CloneIn, ctx: Ctx = Depends(admin_ctx), db: AsyncSession = Depends(get_db)):
     """Saqlangan turdan ishdan bir kun oldin tayyor shablon sifatida nusxa olish (xohlasa o'zgartirib)."""
     src = await get_tour_or_404(db, tour_id, ctx.boss_id)
-    cols = ["title", "description", "pickup_address", "start_at", "platform_percent",
+    cols = ["title", "language", "description", "pickup_address", "start_at", "platform_percent",
             "guide_amount", "driver_amount", "guide_note", "driver_note", "tourist_name",
             "tourist_phone", "tourist_email", "messenger", "pax_count"]
     vals = {c: getattr(src, c) for c in cols}
@@ -130,14 +131,16 @@ async def clone_tour(tour_id: int, data: CloneIn, ctx: Ctx = Depends(admin_ctx),
 
 async def _dispatch(db: AsyncSession, t: Tour, role: str):
     if role == "guide":
-        ids = (await db.execute(
-            select(GuideProfile.user_id).join(User, User.id == GuideProfile.user_id).where(
+        rows = (await db.execute(
+            select(GuideProfile).join(User, User.id == GuideProfile.user_id).where(
                 User.is_active.is_(True), GuideProfile.level >= max(2, t.min_guide_level or 2))
         )).scalars().all()
+        ids = [g.user_id for g in rows if t.language in (g.languages or [])]  # faqat shu tilni biladiganlar
         await notify(db, ids, offer_text(t, "guide", t.guide_amount), t.created_by)
     else:
         ids = (await db.execute(select(User.id).where(User.role == Role.driver, User.is_active.is_(True)))).scalars().all()
         await notify(db, ids, offer_text(t, "driver", t.driver_amount), t.created_by)
+    return len(ids)
 
 
 @router.post("/{tour_id}/publish", response_model=TourOut)
@@ -151,10 +154,11 @@ async def publish(tour_id: int, data: PublishIn, ctx: Ctx = Depends(admin_ctx), 
     await check_floor(db, data.min_guide_level, t.guide_amount)
     t.min_guide_level = data.min_guide_level
     t.status = TourStatus.open
-    await _dispatch(db, t, "guide")
+    n = await _dispatch(db, t, "guide")
     await _dispatch(db, t, "driver")
     await db.commit()
     await db.refresh(t)
+    t.notified_guides = n
     return t
 
 
@@ -174,9 +178,11 @@ async def redispatch(tour_id: int, data: RedispatchIn, ctx: Ctx = Depends(admin_
         await check_floor(db, t.min_guide_level or 2, t.guide_amount)
     elif t.driver_id:
         raise HTTPException(400, "Haydovchi allaqachon tayinlangan; avval uni bekor qiling")
-    await _dispatch(db, t, data.role)
+    n = await _dispatch(db, t, data.role)
     await db.commit()
     await db.refresh(t)
+    if data.role == "guide":
+        t.notified_guides = n
     return t
 
 
@@ -194,6 +200,8 @@ async def assign(tour_id: int, data: AssignIn, ctx: Ctx = Depends(admin_ctx), db
             raise HTTPException(400, "Gid allaqachon tayinlangan")
         if u.guide_profile.level < 2:
             raise HTTPException(400, "1-daraja gid faqat amaliyotchi sifatida qatnashadi")
+        if t.language not in (u.guide_profile.languages or []):
+            raise HTTPException(400, f"Gid {LANGUAGES.get(t.language, t.language)} tilini bilmaydi")
         t.guide_id = u.id
     else:
         if t.driver_id and t.driver_id != u.id:

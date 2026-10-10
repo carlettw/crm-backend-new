@@ -3,6 +3,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.core.languages import clean_languages
 from app.core.timeutil import to_utc
 from app.models import AppKind, AppStatus, TourStatus
 
@@ -18,6 +19,7 @@ class StopIO(BaseModel):
 
 class TourBase(BaseModel):
     title: str = Field(min_length=2, max_length=160)
+    language: str  # tur tili (gid shu tilni bilishi kerak)
     description: str = ""
     pickup_address: str = ""
     start_at: datetime
@@ -40,6 +42,11 @@ class TourBase(BaseModel):
     def _utc(cls, v):
         return to_utc(v)
 
+    @field_validator("language")
+    @classmethod
+    def _lang(cls, v):
+        return clean_languages([v])[0]
+
 
 class TourCreate(TourBase):
     pass
@@ -47,6 +54,12 @@ class TourCreate(TourBase):
 
 class TourUpdate(BaseModel):
     title: str | None = Field(None, min_length=2, max_length=160)
+    language: str | None = None
+
+    @field_validator("language")
+    @classmethod
+    def _lang(cls, v):
+        return clean_languages([v])[0] if v else v
     description: str | None = None
     pickup_address: str | None = None
     start_at: datetime | None = None
@@ -119,6 +132,8 @@ class TourOut(BaseModel):
     boss_id: int
     created_by: int
     title: str
+    language: str
+    notified_guides: int | None = None  # publish/redispatch javobida: nechta gidga yuborildi
     description: str
     pickup_address: str
     start_at: datetime

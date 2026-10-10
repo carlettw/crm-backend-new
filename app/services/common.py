@@ -2,6 +2,7 @@ from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.languages import LANGUAGES
 from app.core.timeutil import CANCEL_LIMIT, TZ, aware, now
 from app.models import (
     AppSetting, GuideProfile, LevelRate, Message, Rating, Role, Tour, TourStatus, UsdRateLog, User,
@@ -87,7 +88,7 @@ def offer_text(t: Tour, role: str, amount: int) -> str:
     note = t.guide_note if role == "guide" else t.driver_note
     extra = f"\nOdam soni: {t.pax_count}" if role == "driver" else ""
     return (
-        f"Yangi tur: {t.title}\nSana: {fmt_dt(t.start_at)}\nYo'nalish: {route}\n"
+        f"Yangi tur: {t.title} ({LANGUAGES.get(t.language, t.language)} tili)\nSana: {fmt_dt(t.start_at)}\nYo'nalish: {route}\n"
         f"Narx: {amount:,} so'm{extra}\n{note}".strip()
     )
 

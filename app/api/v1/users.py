@@ -8,11 +8,25 @@ from app.core.security import hash_password
 from app.db.session import get_db
 from app.models.user import BossProfile, DriverProfile, GuideProfile, LevelRate, Role, User
 from app.schemas.user import (
-    ActiveIn, LevelRateIn, LevelRateOut, ResetPasswordIn, UserCreate, UserListOut, UserOut,
+    ActiveIn, LangsIn, LevelRateIn, LevelRateOut, ResetPasswordIn, UserCreate, UserListOut, UserOut,
 )
 
 router = APIRouter(tags=["users"])
 super_only = require_roles(Role.super_admin)
+
+
+@router.get("/languages")
+async def languages(_: User = Depends(get_current_user)):
+    from app.core.languages import LANGUAGES
+    return [{"code": k, "name": v} for k, v in LANGUAGES.items()]
+
+
+@router.put("/me/languages", response_model=UserOut)
+async def set_my_languages(data: LangsIn, user: User = Depends(require_roles(Role.guide)), db: AsyncSession = Depends(get_db)):
+    """Gid o'zi biladigan tillarni yangilaydi."""
+    user.guide_profile.languages = data.languages
+    await db.commit()
+    return user
 
 
 @router.get("/users/me", response_model=UserOut)
@@ -32,7 +46,7 @@ async def create_user(data: UserCreate, _: User = Depends(super_only), db: Async
     if data.role == Role.boss:
         user.boss_profile = BossProfile(super_admin_percent=data.boss_percent)
     elif data.role == Role.guide:
-        user.guide_profile = GuideProfile(level=data.guide_level)
+        user.guide_profile = GuideProfile(level=data.guide_level, languages=data.languages)
     elif data.role == Role.driver:
         user.driver_profile = DriverProfile(car_model=data.car_model)
     db.add(user)

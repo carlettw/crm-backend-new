@@ -1,7 +1,7 @@
 import enum
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, Numeric, String, func
+from sqlalchemy import JSON, Boolean, DateTime, Enum, ForeignKey, Integer, Numeric, String, func, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -49,6 +49,10 @@ class User(Base):
         return self.guide_profile.level if self.guide_profile else None
 
     @property
+    def languages(self):
+        return (self.guide_profile.languages or []) if self.guide_profile else None
+
+    @property
     def car_model(self):
         return self.driver_profile.car_model if self.driver_profile else None
 
@@ -73,6 +77,8 @@ class GuideProfile(Base):
     # 1-daraja chekboksları
     practice_done: Mapped[bool] = mapped_column(Boolean, default=False)
     interview_passed: Mapped[bool] = mapped_column(Boolean, default=False)
+    # gid biladigan tillar kodlari, masalan ["uz", "ru", "en"]
+    languages: Mapped[list] = mapped_column(JSON, default=list, server_default=text("'[]'"))
     user: Mapped[User] = relationship(back_populates="guide_profile")
 
 

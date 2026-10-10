@@ -13,6 +13,10 @@ router = APIRouter(tags=["super admin"])
 super_only = require_roles(Role.super_admin)
 
 
+class LangsBody(BaseModel):
+    languages: list[str] = Field(min_length=1)
+
+
 class LevelIn(BaseModel):
     level: int = Field(ge=1, le=7)
 
@@ -46,6 +50,18 @@ async def set_level(user_id: int, data: LevelIn, _: User = Depends(super_only), 
     await notify(db, [user_id], f"Darajangiz {data.level}-darajaga o'zgartirildi.")
     await db.commit()
     return {"level": gp.level}
+
+
+@router.put("/guides/{user_id}/languages")
+async def set_guide_languages(user_id: int, data: LangsBody, _: User = Depends(super_only), db: AsyncSession = Depends(get_db)):
+    from app.core.languages import clean_languages
+    gp = await _guide(db, user_id)
+    try:
+        gp.languages = clean_languages(data.languages)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    await db.commit()
+    return {"languages": gp.languages}
 
 
 @router.get("/settings")

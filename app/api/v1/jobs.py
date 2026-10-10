@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.languages import LANGUAGES
 from app.core.deps import get_current_user, require_roles
 from app.core.timeutil import aware, local_day_range, now, today_local
 from app.db.session import get_db
@@ -39,7 +40,8 @@ async def guide_available(user: User = Depends(guide_only), db: AsyncSession = D
         return []
     q = select(Tour).where(Tour.status == TourStatus.open, Tour.guide_id.is_(None),
                            Tour.min_guide_level <= lvl, Tour.start_at > now()).order_by(Tour.start_at)
-    return [job_view(t, "guide", lvl) for t in (await db.execute(q)).scalars().all()]
+    langs = user.guide_profile.languages or []
+    return [job_view(t, "guide", lvl) for t in (await db.execute(q)).scalars().all() if t.language in langs]
 
 
 @router.get("/guide/practice-available")
@@ -76,6 +78,8 @@ async def guide_accept(tour_id: int, user: User = Depends(guide_only), db: Async
     lvl = user.guide_profile.level
     if lvl < 2 or t.min_guide_level is None or lvl < t.min_guide_level:
         raise HTTPException(403, "Bu tur sizning darajangizga mos emas")
+    if t.language not in (user.guide_profile.languages or []):
+        raise HTTPException(403, f"Bu tur {LANGUAGES.get(t.language, t.language)} tilida. Sizning tillaringizda yo'q — profilingizda tillarni yangilang")
     if aware(t.start_at) <= now():
         raise HTTPException(400, "Tur vaqti o'tgan")
     res = await db.execute(update(Tour).where(

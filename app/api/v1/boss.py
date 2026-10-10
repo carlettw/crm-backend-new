@@ -212,6 +212,7 @@ async def my_account(user: User = Depends(require_roles(Role.guide, Role.driver,
         "guide": ({"level": user.guide_profile.level, "level_tours": user.guide_profile.level_tours,
                    "completed_tours": user.guide_profile.completed_tours,
                    "practice_done": user.guide_profile.practice_done,
-                   "interview_passed": user.guide_profile.interview_passed}
+                   "interview_passed": user.guide_profile.interview_passed,
+                   "languages": user.guide_profile.languages or []}
                   if user.role == Role.guide else None),
     }
