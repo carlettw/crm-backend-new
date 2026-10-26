@@ -1,0 +1,130 @@
+import re
+from datetime import datetime
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from app.models.user import Role
+from app.core import cards
+from app.core.languages import clean_languages
+from app.core.regions import clean_regions
+from app.schemas.auth import normalize_phone
+
+
+class UserCreate(BaseModel):
+    role: Role
+    phone: str
+    username: str
+    full_name: str = Field(min_length=2, max_length=120)
+    password: str = Field(min_length=6)
+    # rolga xos maydonlar
+    boss_percent: float | None = Field(default=None, ge=0, le=100)
+    guide_level: int | None = Field(default=None, ge=1, le=7)
+    car_model: str | None = Field(default=None, max_length=80)
+    languages: list[str] | None = None  # gid uchun majburiy
+    regions: list[str] | None = None    # gid uchun ixtiyoriy (o'zi ham kiritadi)
+
+    @field_validator("regions")
+    @classmethod
+    def _regs(cls, v):
+        return clean_regions(v) if v is not None else v
+
+    @field_validator("languages")
+    @classmethod
+    def _langs(cls, v):
+        return clean_languages(v) if v is not None else v
+
+    @field_validator("phone")
+    @classmethod
+    def _phone(cls, v):
+        return normalize_phone(v)
+
+    @field_validator("username")
+    @classmethod
+    def _username(cls, v):
+        if not re.fullmatch(r"[A-Za-z0-9_]{3,32}", v):
+            raise ValueError("Username 3-32 belgi: lotin harflari, raqam va _")
+        return v.lower()
+
+    @model_validator(mode="after")
+    def _role_fields(self):
+        if self.role == Role.super_admin:
+            raise ValueError("Super admin API orqali yaratilmaydi")
+        if self.role == Role.boss and self.boss_percent is None:
+            raise ValueError("Boshliq uchun boss_percent majburiy")
+        if self.role == Role.guide and self.guide_level is None:
+            raise ValueError("Gid uchun guide_level majburiy")
+        if self.role == Role.guide and not self.languages:
+            raise ValueError("Gid uchun kamida bitta til tanlang")
+        if self.role == Role.driver and not self.car_model:
+            raise ValueError("Haydovchi uchun car_model (mashina rusumi) majburiy")
+        return self
+
+
+class UserOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    phone: str
+    username: str
+    full_name: str
+    role: Role
+    is_active: bool
+    created_at: datetime
+    boss_percent: float | None = None
+    guide_level: int | None = None
+    car_model: str | None = None
+    languages: list[str] | None = None
+    regions: list[str] | None = None
+    has_card: bool = False
+    telegram_linked: bool = False
+
+
+class UserListOut(BaseModel):
+    total: int
+    items: list[UserOut]
+
+
+class ActiveIn(BaseModel):
+    is_active: bool
+
+
+class ResetPasswordIn(BaseModel):
+    new_password: str = Field(min_length=6)
+
+
+class LevelRateIn(BaseModel):
+    amount: int = Field(gt=0)
+
+
+class LevelRateOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    level: int
+    amount: int
+
+
+class LangsIn(BaseModel):
+    languages: list[str] = Field(min_length=1)
+
+    @field_validator("languages")
+    @classmethod
+    def _langs(cls, v):
+        return clean_languages(v)
+
+
+class RegionsIn(BaseModel):
+    regions: list[str] = Field(min_length=1)
+
+    @field_validator("regions")
+    @classmethod
+    def _regs(cls, v):
+        return clean_regions(v)
+
+
+class CardIn(BaseModel):
+    number: str
+    holder: str | None = Field(None, max_length=80)
+
+    @field_validator("number")
+    @classmethod
+    def _num(cls, v):
+        return cards.validate(v)
