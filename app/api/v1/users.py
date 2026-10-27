@@ -38,6 +38,10 @@ async def level_info(user: User = Depends(require_roles(Role.guide)), db: AsyncS
         title, info = LEVEL_TEXT[lvl]
         levels.append({"level": lvl, "title": title, "info": info, "rate": 0 if lvl <= 2 else top,
                        "state": "done" if lvl < gp.level else "current" if lvl == gp.level else "locked"})
+    from app.services.common import get_usd_rate
+    usd_rate = await get_usd_rate(db)
+    for l in levels:
+        l["rate_usd"] = None if l["rate"] is None else round(l["rate"] / usd_rate, 2)
     if gp.level == 1:
         nxt = {"level": 2, "kind": "checklist", "done": int(gp.practice_done) + int(gp.interview_passed), "need": 2,
                "practice_done": gp.practice_done, "interview_passed": gp.interview_passed}
@@ -51,7 +55,7 @@ async def level_info(user: User = Depends(require_roles(Role.guide)), db: AsyncS
         nxt = None
     cur = levels[gp.level - 1]
     return {"level": gp.level, "title": cur["title"], "info": cur["info"], "rate": cur["rate"],
-            "completed_tours": gp.completed_tours, "level_tours": gp.level_tours, "next": nxt, "levels": levels}
+            "rate_usd": cur["rate_usd"], "usd_rate": usd_rate, "completed_tours": gp.completed_tours, "level_tours": gp.level_tours, "next": nxt, "levels": levels}
 
 
 @router.get("/regions")
@@ -192,12 +196,16 @@ async def reset_password(user_id: int, data: ResetPasswordIn, _: User = Depends(
 async def get_rates(_: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     """3-7 darajalar: amount — o'zi uchun belgilangan, effective — amaldagi eng kam summa
     (pastki darajalardan meros bo'lib o'tadi)."""
+    from app.services.common import get_usd_rate
     own = {r.level: r.amount for r in (await db.execute(select(LevelRate))).scalars().all()}
+    rate = await get_usd_rate(db)  # summalar so'mda saqlanadi; dollar amaldagi kurs bo'yicha hisoblanadi
+    usd = lambda v: None if v is None else round(v / rate, 2)
     out, top = [], None
     for lvl in range(3, 8):  # amaldagi summa: o'zi va pastki darajalarning eng kattasi
         if own.get(lvl) is not None:
             top = max(top or 0, own[lvl])
-        out.append({"level": lvl, "amount": own.get(lvl), "effective": top})
+        out.append({"level": lvl, "amount": own.get(lvl), "effective": top,
+                    "amount_usd": usd(own.get(lvl)), "effective_usd": usd(top), "usd_rate": rate})
     return out
 
 

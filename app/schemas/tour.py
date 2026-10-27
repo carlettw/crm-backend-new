@@ -38,6 +38,7 @@ class TourBase(BaseModel):
     title: str = Field(min_length=2, max_length=160)
     groups: list[GroupIO] = Field(min_length=1)  # har bir guruh: til, ism familya, aloqa, odam soni
     needs_driver: bool = True  # False: gid yolg'iz chiqadi (haydovchisiz)
+    region: str | None = None  # ixtiyoriy; yuborishda ham tanlanadi
     description: str = ""
     pickup_address: str = ""
     start_at: datetime
@@ -54,6 +55,11 @@ class TourBase(BaseModel):
     @classmethod
     def _utc(cls, v):
         return to_utc(v)
+
+    @field_validator("region")
+    @classmethod
+    def _reg(cls, v):
+        return clean_regions([v])[0] if v else None
 
 
 class TourCreate(TourBase):
