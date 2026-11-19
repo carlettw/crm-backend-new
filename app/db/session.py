@@ -7,9 +7,11 @@ def make_engine(url: str | None = None):
     url = url or settings.database_url
     args = {}
     if url.startswith("postgresql"):
-        # Supabase pooler (pgbouncer) bilan mos ishlashi uchun prepared statement keshi o'chiriladi
-        args["statement_cache_size"] = 0
-        args["prepared_statement_cache_size"] = 0
+        # Prepared statement keshi: har so'rovda bazaga bitta borib-kelishni tejaydi.
+        # Supabase "session" pooler (port 5432) va oddiy Postgres bilan ishlaydi; "transaction" pooler (6543) bilan — yo'q.
+        if not settings.db_statement_cache or ":6543/" in url:
+            args["statement_cache_size"] = 0
+            args["prepared_statement_cache_size"] = 0
         if settings.db_ssl:
             args["ssl"] = "require"
     kw = {}

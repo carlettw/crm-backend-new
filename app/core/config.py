@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     # Supabase: Project Settings → Database → Connection string (Session pooler) dan olinadi
     database_url: str = "postgresql+asyncpg://postgres.PROJECT_REF:PAROL@aws-0-REGION.pooler.supabase.com:5432/postgres"
     db_ssl: bool = True  # Supabase SSL talab qiladi; lokal Postgres uchun false
+    db_statement_cache: bool = True  # muammo bo'lsa DB_STATEMENT_CACHE=false
     secret_key: str = DEFAULT_SECRET
     # karta raqamlarini shifrlash kaliti (ixtiyoriy). Bo'sh bo'lsa SECRET_KEY dan hosil qilinadi.
     # Diqqat: kalit o'zgarsa, saqlangan kartalarni o'qib bo'lmaydi.
