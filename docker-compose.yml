@@ -1,17 +1,41 @@
+# Lokal ishga tushirish: cp .env.example .env  →  docker compose up --build
+# API: http://localhost:8000/docs   Sayt: http://localhost:3000
 services:
   db:
-    image: postgres:16
+    image: postgres:16-alpine
     environment:
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: tourdb
+      POSTGRES_USER: tur
+      POSTGRES_PASSWORD: tur
+      POSTGRES_DB: tur
     volumes:
       - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tur"]
+      interval: 3s
+      retries: 20
+
   api:
     build: .
     env_file: .env
+    environment:
+      # lokal Postgres (.env dagi Supabase manzili ustidan yoziladi)
+      DATABASE_URL: postgresql+asyncpg://tur:tur@db:5432/tur
+      DB_SSL: "false"
+      AUTO_CREATE_TABLES: "false"
+      ENVIRONMENT: development
     ports:
       - "8000:8000"
     depends_on:
-      - db
+      db:
+        condition: service_healthy
+
+  web:  # sayt: frontend papkasi yonida bo'lsa (docker compose --profile web up)
+    profiles: ["web"]
+    build: ../frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - api
+
 volumes:
   pgdata:

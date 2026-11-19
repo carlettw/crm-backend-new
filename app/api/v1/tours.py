@@ -1,7 +1,7 @@
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.languages import LANGUAGES
@@ -9,7 +9,7 @@ from app.core.ctx import Ctx, admin_ctx, get_tour_or_404, read_ctx
 from app.core.timeutil import START_GRACE, aware, now
 from app.db.session import get_db
 from app.models import (
-    AppKind, AppStatus, Fine, GuideProfile, Role, Tour, TourApplication, TourCancellation,
+    AppKind, AppStatus, Earning, Fine, GuideProfile, Rating, Role, Tour, TourApplication, TourCancellation,
     TourGroup, TourStatus, TourStop, User,
 )
 from app.schemas.tour import (
@@ -17,7 +17,7 @@ from app.schemas.tour import (
     TourCreate, TourOut, TourUpdate, UserIdIn,
 )
 from app.services.common import (
-    apply_price, check_floor, driver_rating, finalize_tour, notify, offer_text, recompute_status,
+    apply_price, check_floor, ensure_free, finalize_tour, fmt_dt, notify, offer_text, recompute_status,
 )
 
 router = APIRouter(prefix="/tours", tags=["tours (admin/boshliq)"])
@@ -84,9 +84,14 @@ async def get_tour(tour_id: int, ctx: Ctx = Depends(read_ctx), db: AsyncSession 
 @router.patch("/{tour_id}", response_model=TourOut)
 async def update_tour(tour_id: int, data: TourUpdate, ctx: Ctx = Depends(admin_ctx), db: AsyncSession = Depends(get_db)):
     t = await get_tour_or_404(db, tour_id, ctx.boss_id)
-    if t.status in (TourStatus.completed, TourStatus.cancelled):
-        raise HTTPException(400, "Yakunlangan yoki bekor qilingan turni o'zgartirib bo'lmaydi")
+    if t.status not in (TourStatus.draft, TourStatus.open, TourStatus.ready):
+        raise HTTPException(400, "Faqat shablon yoki faol (yakunlanmagan) turni o'zgartirish mumkin")
     vals = data.model_dump(exclude_unset=True)
+    if t.status != TourStatus.draft and vals.get("start_at") is not None and vals["start_at"] <= now() - START_GRACE:
+        raise HTTPException(400, "Yuborilgan tur vaqtini o'tib ketgan vaqtga qo'yib bo'lmaydi")
+    old = dict(start=t.start_at, pickup=t.pickup_address, stops=[(x.address, x.arrival_time) for x in t.stops],
+               langs=list(t.languages), pax=t.pax_count, region=t.region, guide_amount=t.guide_amount,
+               driver_amount=t.driver_amount)
     stops, groups = vals.pop("stops", None), vals.pop("groups", None)
     cur, amt = vals.pop("price_currency", None), vals.pop("total_price", None)
     if vals.get("needs_driver") is False and t.driver_id:
@@ -101,15 +106,56 @@ async def update_tour(tour_id: int, data: TourUpdate, ctx: Ctx = Depends(admin_c
         t.stops = _stops(data.stops)
     if groups is not None:
         _set_groups(t, data.groups)
+        if t.guide_id and t.guide:
+            missing = [LANGUAGES.get(x, x) for x in t.languages if x not in (t.guide.guide_profile.languages or [])]
+            if missing:
+                raise HTTPException(400, f"Tayinlangan gid {', '.join(missing)} tilini bilmaydi. Avval gidni bekor qiling")
+    if t.status != TourStatus.draft and ("start_at" in vals or stops is not None):
+        for uid, who in ((t.guide_id, "Gid"), (t.driver_id, "Haydovchi")):
+            if uid:
+                await ensure_free(db, uid, t, who)
     if "needs_driver" in vals:
         if not t.needs_driver:
             t.driver_amount = 0
         recompute_status(t)
     if t.status != TourStatus.draft and t.min_guide_level and ("guide_amount" in vals):
         await check_floor(db, t.min_guide_level, t.guide_amount)
+    if t.status != TourStatus.draft:
+        await _notify_changes(db, t, old, ctx.user.id)
     await db.commit()
     await db.refresh(t)
     return t
+
+
+async def _participants(db, t: Tour, include_trainees: bool = True) -> list[int]:
+    ids = [x for x in (t.guide_id, t.driver_id) if x]
+    if include_trainees:
+        ids += (await db.execute(select(TourApplication.user_id).where(
+            TourApplication.tour_id == t.id, TourApplication.kind == AppKind.practice,
+            TourApplication.status == AppStatus.approved))).scalars().all()
+    return list(dict.fromkeys(ids))
+
+
+async def _notify_changes(db, t: Tour, old: dict, by: int):
+    """Faol turdagi muhim o'zgarishlar haqida tayinlangan ishchilar va amaliyotchilarga xabar."""
+    ch = []
+    if aware(old["start"]) != aware(t.start_at):
+        ch.append(f"vaqt: {fmt_dt(old['start'])} → {fmt_dt(t.start_at)}")
+    if old["pickup"] != t.pickup_address:
+        ch.append(f"olib ketish manzili: {t.pickup_address or '—'}")
+    if old["stops"] != [(x.address, x.arrival_time) for x in t.stops]:
+        ch.append("yo'nalish (nuqtalar) o'zgardi")
+    if old["langs"] != list(t.languages) or old["pax"] != t.pax_count:
+        ch.append(f"guruhlar: {t.pax_count} kishi, tillar: {', '.join(LANGUAGES.get(x, x) for x in t.languages)}")
+    if old["region"] != t.region:
+        ch.append("viloyat o'zgardi")
+    msg = f"«{t.title}» turi o'zgartirildi: " + "; ".join(ch) if ch else None
+    if msg:
+        await notify(db, await _participants(db, t), msg, by)
+    if t.guide_id and old["guide_amount"] != t.guide_amount:
+        await notify(db, [t.guide_id], f"«{t.title}»: gid haqi {old['guide_amount']:,} → {t.guide_amount:,} so'm", by)
+    if t.driver_id and old["driver_amount"] != t.driver_amount:
+        await notify(db, [t.driver_id], f"«{t.title}»: haydovchi haqi {old['driver_amount']:,} → {t.driver_amount:,} so'm", by)
 
 
 @router.delete("/{tour_id}", status_code=204)
@@ -225,17 +271,21 @@ async def assign(tour_id: int, data: AssignIn, ctx: Ctx = Depends(admin_ctx), db
     if data.role == "guide":
         if t.guide_id and t.guide_id != u.id:
             raise HTTPException(400, "Gid allaqachon tayinlangan")
-        if u.guide_profile.level < 2:
+        if u.guide_profile is None or u.guide_profile.level < 2:
             raise HTTPException(400, "1-daraja gid faqat amaliyotchi sifatida qatnashadi")
         missing = [LANGUAGES.get(x, x) for x in t.languages if x not in (u.guide_profile.languages or [])]
         if missing:
             raise HTTPException(400, f"Gid {', '.join(missing)} tilini bilmaydi")
+        if t.guide_id != u.id:
+            await ensure_free(db, u.id, t, "Bu gid")
         t.guide_id = u.id
     else:
         if not t.needs_driver:
             raise HTTPException(400, "Bu tur haydovchisiz (gid yolg'iz chiqadi)")
         if t.driver_id and t.driver_id != u.id:
             raise HTTPException(400, "Haydovchi allaqachon tayinlangan")
+        if t.driver_id != u.id:
+            await ensure_free(db, u.id, t, "Bu haydovchi")
         t.driver_id = u.id
         apps = (await db.execute(select(TourApplication).where(
             TourApplication.tour_id == t.id, TourApplication.kind == AppKind.driver,
@@ -243,7 +293,7 @@ async def assign(tour_id: int, data: AssignIn, ctx: Ctx = Depends(admin_ctx), db
         for a in apps:
             a.status = AppStatus.approved if a.user_id == u.id else AppStatus.rejected
     recompute_status(t)
-    await notify(db, [u.id], f"Sizga tur tayinlandi: «{t.title}».", ctx.user.id)
+    await notify(db, [u.id], f"Sizga tur tayinlandi: «{t.title}» — {fmt_dt(t.start_at)}.", ctx.user.id)
     await db.commit()
     await db.refresh(t)
     return t
@@ -290,6 +340,8 @@ async def admin_complete(tour_id: int, ctx: Ctx = Depends(admin_ctx), db: AsyncS
     t = await get_tour_or_404(db, tour_id, ctx.boss_id)
     if t.status not in (TourStatus.open, TourStatus.ready, TourStatus.awaiting_approval):
         raise HTTPException(400, "Faqat ochiq yoki tasdiq kutayotgan turni yakunlash mumkin")
+    if aware(t.start_at) > now():
+        raise HTTPException(400, "Tur hali boshlanmagan — boshlanmagan turni yakunlab bo'lmaydi (kerak bo'lsa bekor qiling)")
     await finalize_tour(db, t, by_admin=t.status != TourStatus.awaiting_approval)
     await db.commit()
     await db.refresh(t)
@@ -318,9 +370,14 @@ async def cancel_tour(tour_id: int, data: ReasonIn, ctx: Ctx = Depends(admin_ctx
     t = await get_tour_or_404(db, tour_id, ctx.boss_id)
     if t.status in (TourStatus.completed, TourStatus.cancelled):
         raise HTTPException(400, "Tur allaqachon yakunlangan yoki bekor qilingan")
-    ids = [x for x in (t.guide_id, t.driver_id) if x]
+    ids = await _participants(db, t) if t.status != TourStatus.draft else []
+    pend = (await db.execute(select(TourApplication).where(
+        TourApplication.tour_id == t.id, TourApplication.status == AppStatus.pending))).scalars().all()
+    for a in pend:  # kutilayotgan arizalar yopiladi
+        a.status = AppStatus.rejected
+        ids.append(a.user_id)
     t.status = TourStatus.cancelled
-    await notify(db, ids, f"«{t.title}» ({t.start_at:%d.%m %H:%M}) turi bekor qilindi."
+    await notify(db, ids, f"«{t.title}» ({fmt_dt(t.start_at)}) turi bekor qilindi."
                  + (f" Sabab: {data.reason}" if data.reason else ""), ctx.user.id)
     await db.commit()
     await db.refresh(t)
@@ -328,12 +385,21 @@ async def cancel_tour(tour_id: int, data: ReasonIn, ctx: Ctx = Depends(admin_ctx
 
 
 # ---------- arizalar (haydovchi, amaliyotchi gid) ----------
-async def _app_out(db, a: TourApplication) -> ApplicationOut:
+async def _ratings(db, ids) -> dict[int, float]:
+    if not ids:
+        return {}
+    rows = (await db.execute(select(Rating.driver_id, func.avg(Rating.stars)).where(
+        Rating.driver_id.in_(ids)).group_by(Rating.driver_id))).all()
+    return {d: round(float(v), 2) for d, v in rows}
+
+
+async def _app_out(db, a: TourApplication, ratings: dict | None = None) -> ApplicationOut:
     u = a.user
+    if ratings is None:
+        ratings = await _ratings(db, [u.id]) if u.role == Role.driver else {}
     return ApplicationOut(
         id=a.id, user_id=u.id, full_name=u.full_name, phone=u.phone, kind=a.kind, status=a.status,
-        car_model=u.car_model,
-        rating=await driver_rating(db, u.id) if u.role == Role.driver else None,
+        car_model=u.car_model, rating=ratings.get(u.id) if u.role == Role.driver else None,
         guide_level=u.guide_level,
     )
 
@@ -343,7 +409,8 @@ async def applications(tour_id: int, ctx: Ctx = Depends(read_ctx), db: AsyncSess
     await get_tour_or_404(db, tour_id, ctx.boss_id)
     apps = (await db.execute(select(TourApplication).where(TourApplication.tour_id == tour_id)
                              .order_by(TourApplication.id))).scalars().all()
-    return [await _app_out(db, a) for a in apps]
+    ratings = await _ratings(db, [a.user_id for a in apps if a.kind == AppKind.driver])
+    return [await _app_out(db, a, ratings) for a in apps]
 
 
 @router.post("/{tour_id}/driver/approve", response_model=TourOut)
@@ -373,7 +440,7 @@ async def decide_application(tour_id: int, app_id: int, action: str, ctx: Ctx = 
     elif action == "approve" and app.kind == AppKind.practice:
         app.status = AppStatus.approved
         await notify(db, [app.user_id], f"«{t.title}» turiga amaliyotchi sifatida tasdiqlandingiz. "
-                     f"Sana: {t.start_at:%d.%m.%Y %H:%M}, manzil: {t.pickup_address}", ctx.user.id)
+                     f"Sana: {fmt_dt(t.start_at)}, manzil: {t.pickup_address or '—'}", ctx.user.id)
     else:
         raise HTTPException(400, "Haydovchini /driver/approve orqali tasdiqlang")
     await db.commit()
@@ -389,6 +456,15 @@ async def add_fine(tour_id: int, data: FineIn, ctx: Ctx = Depends(admin_ctx), db
         raise HTTPException(400, "Jarima tur yakunlangandan keyin belgilanadi")
     if data.user_id not in (t.guide_id, t.driver_id):
         raise HTTPException(400, "Jarima faqat shu turdagi gid yoki haydovchiga belgilanadi")
+    earned = (await db.execute(select(func.coalesce(func.sum(Earning.amount), 0)).where(
+        Earning.tour_id == t.id, Earning.user_id == data.user_id))).scalar_one()
+    fined = (await db.execute(select(func.coalesce(func.sum(Fine.amount), 0)).where(
+        Fine.tour_id == t.id, Fine.user_id == data.user_id))).scalar_one()
+    if earned <= 0:
+        raise HTTPException(400, "Bu ishchi shu turdan haq olmagan (tekin tur) — jarima qo'llab bo'lmaydi")
+    if fined + data.amount > earned:
+        raise HTTPException(400, f"Jarima shu tur uchun haqdan ({earned:,} so'm) oshmasligi kerak"
+                                 + (f"; allaqachon {fined:,} so'm jarima bor" if fined else ""))
     db.add(Fine(boss_id=t.boss_id, tour_id=t.id, user_id=data.user_id, amount=data.amount,
                 reason=data.reason, created_by=ctx.user.id))
     t.fine_decided = True
@@ -401,5 +477,7 @@ async def add_fine(tour_id: int, data: FineIn, ctx: Ctx = Depends(admin_ctx), db
 async def skip_fine(tour_id: int, ctx: Ctx = Depends(admin_ctx), db: AsyncSession = Depends(get_db)):
     """«Jarima bormi?» savoliga «yo'q» javobi."""
     t = await get_tour_or_404(db, tour_id, ctx.boss_id)
+    if t.status != TourStatus.completed:
+        raise HTTPException(400, "Tur hali yakunlanmagan")
     t.fine_decided = True
     await db.commit()

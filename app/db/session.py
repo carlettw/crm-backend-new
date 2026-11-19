@@ -26,3 +26,12 @@ SessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 async def get_db():
     async with SessionLocal() as session:
         yield session
+
+
+async def try_lock(db, key: int) -> bool:
+    """Postgres: tranzaksiya davomidagi advisory lock (bir nechta server nusxasi bir ishni ikki marta qilmasin).
+    SQLite'da har doim True."""
+    if db.bind.dialect.name != "postgresql":
+        return True
+    from sqlalchemy import text
+    return bool((await db.execute(text("SELECT pg_try_advisory_xact_lock(:k)"), {"k": key})).scalar())

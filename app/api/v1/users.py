@@ -16,7 +16,7 @@ super_only = require_roles(Role.super_admin)
 
 
 LEVEL_TEXT = {
-    1: ("Amaliyotchi", "Real gidga yordamchi bo'lib 1 ta turga chiqasiz va suhbatdan o'tasiz. Haq to'lanmaydi."),
+    1: ("Amaliyotchi", "Admin sizni turlarga biriktiradi. 3 xil turdagi 3 ta turda amaliyot o'tsangiz 2-darajaga o'tasiz. Haq to'lanmaydi."),
     2: ("Real amaliyotchi", "5 ta tekin turga o'zingiz gid sifatida chiqasiz. Haq to'lanmaydi."),
     3: ("Maoshli gid", "Har tur uchun belgilangan summa to'lanadi. 15 ta turdan keyin 4-darajaga o'tasiz."),
     4: ("Tajribali gid", "Belgilangan summa to'lanadi. O'zingizdan pastroq darajalar uchun yuborilgan turlarni ham ko'rib, rozi bo'lsangiz olasiz."),
@@ -30,6 +30,8 @@ LEVEL_TEXT = {
 async def level_info(user: User = Depends(require_roles(Role.guide)), db: AsyncSession = Depends(get_db)):
     """Gidning darajasi, daraja summasi, keyingi darajagacha progress va barcha darajalar haqida ma'lumot."""
     gp = user.guide_profile
+    if gp is None:
+        raise HTTPException(404, "Gid profili topilmadi. Super adminga murojaat qiling")
     own = {r.level: r.amount for r in (await db.execute(select(LevelRate))).scalars().all()}
     levels, top = [], None
     for lvl in range(1, 8):
@@ -43,8 +45,10 @@ async def level_info(user: User = Depends(require_roles(Role.guide)), db: AsyncS
     for l in levels:
         l["rate_usd"] = None if l["rate"] is None else round(l["rate"] / usd_rate, 2)
     if gp.level == 1:
-        nxt = {"level": 2, "kind": "checklist", "done": int(gp.practice_done) + int(gp.interview_passed), "need": 2,
-               "practice_done": gp.practice_done, "interview_passed": gp.interview_passed}
+        from app.services.certificates import practice_progress
+        prog = await practice_progress(db, user.id)
+        nxt = {"level": 2, "kind": "practice", "done": prog["types"], "need": prog["need"],
+               "tours": prog["tours"], "all_tours": prog["all_tours"]}
     elif gp.level == 2:
         nxt = {"level": 3, "kind": "tours", "done": gp.level_tours, "need": 5}
     elif gp.level == 3:
@@ -67,6 +71,8 @@ async def regions(_: User = Depends(get_current_user)):
 @router.put("/me/regions", response_model=UserOut)
 async def set_my_regions(data: RegionsIn, user: User = Depends(require_roles(Role.guide)), db: AsyncSession = Depends(get_db)):
     """Gid ishlamoqchi bo'lgan viloyatlarni yangilaydi (tur shu viloyatlar bo'yicha yuboriladi)."""
+    if user.guide_profile is None:
+        raise HTTPException(404, "Gid profili topilmadi")
     user.guide_profile.regions = data.regions
     await db.commit()
     return user
@@ -109,6 +115,8 @@ async def languages(_: User = Depends(get_current_user)):
 @router.put("/me/languages", response_model=UserOut)
 async def set_my_languages(data: LangsIn, user: User = Depends(require_roles(Role.guide)), db: AsyncSession = Depends(get_db)):
     """Gid o'zi biladigan tillarni yangilaydi."""
+    if user.guide_profile is None:
+        raise HTTPException(404, "Gid profili topilmadi")
     user.guide_profile.languages = data.languages
     await db.commit()
     return user
@@ -127,6 +135,7 @@ async def create_user(data: UserCreate, _: User = Depends(super_only), db: Async
         full_name=data.full_name,
         password_hash=hash_password(data.password),
         role=data.role,
+        must_change_password=True,  # birinchi kirishda o'zi yangi parol qo'yadi
     )
     if data.role == Role.boss:
         user.boss_profile = BossProfile(super_admin_percent=data.boss_percent)
@@ -179,6 +188,11 @@ async def set_active(user_id: int, data: ActiveIn, me: User = Depends(super_only
     user = await _get_or_404(db, user_id)
     if user.id == me.id:
         raise HTTPException(400, "O'zingizni o'chira olmaysiz")
+    if user.is_active and not data.is_active:
+        user.token_version = (user.token_version or 0) + 1  # barcha sessiyalari darhol tugaydi
+        if user.role in (Role.guide, Role.driver):
+            from app.services.common import release_worker
+            await release_worker(db, user, me.id, "Foydalanuvchi faolsizlantirildi")
     user.is_active = data.is_active
     await db.commit()
     return user
@@ -188,6 +202,8 @@ async def set_active(user_id: int, data: ActiveIn, me: User = Depends(super_only
 async def reset_password(user_id: int, data: ResetPasswordIn, _: User = Depends(super_only), db: AsyncSession = Depends(get_db)):
     user = await _get_or_404(db, user_id)
     user.password_hash = hash_password(data.new_password)
+    user.must_change_password = True
+    user.token_version = (user.token_version or 0) + 1  # eski sessiyalar bekor bo'ladi
     await db.commit()
 
 

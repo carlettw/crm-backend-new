@@ -1,0 +1,65 @@
+# Har kuni 03:00 (Toshkent) Supabase bazasining shifrlangan nusxasi:
+#  • GitHub'da 14 kun saqlanadi (Actions → shu ish → Artifacts) — faqat repo yopiq (private) bo'lsa
+#  • Telegram'ga yuboriladi (super admin Telegramni ulagan bo'lsa)
+# Kerakli Secrets (repo → Settings → Secrets and variables → Actions):
+#   DATABASE_URL       — Render'dagi bilan bir xil
+#   BACKUP_PASSWORD    — nusxani shifrlash paroli (o'zingiz o'ylab toping, yozib qo'ying)
+#   TELEGRAM_BOT_TOKEN — ixtiyoriy
+name: Kunlik zaxira nusxa
+
+on:
+  schedule:
+    - cron: "0 22 * * *"   # UTC 22:00 = Toshkent 03:00
+  workflow_dispatch: {}     # qo'lda ishga tushirish: Actions → Run workflow
+
+permissions:
+  contents: read
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Bazadan nusxa olish
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          BACKUP_PASSWORD: ${{ secrets.BACKUP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          [ -n "$DATABASE_URL" ] || { echo "DATABASE_URL secret yo'q"; exit 1; }
+          [ -n "$BACKUP_PASSWORD" ] || { echo "BACKUP_PASSWORD secret yo'q"; exit 1; }
+          URL="${DATABASE_URL/postgresql+asyncpg:/postgresql:}"
+          case "$URL" in *sslmode=*) ;; *\?*) URL="$URL&sslmode=require" ;; *) URL="$URL?sslmode=require" ;; esac
+          echo "::add-mask::$URL"
+          TS=$(TZ=Asia/Tashkent date +%Y%m%d_%H%M)
+          mkdir -p out
+          docker run --rm -v "$PWD/out:/b" postgres:17-alpine \
+            pg_dump "$URL" --schema=public --no-owner --no-privileges -Fc -f "/b/tur_$TS.dump"
+          test -s "out/tur_$TS.dump"
+          openssl enc -aes-256-cbc -pbkdf2 -salt -pass env:BACKUP_PASSWORD -in "out/tur_$TS.dump" -out "out/tur_$TS.dump.enc"
+          rm "out/tur_$TS.dump"
+          echo "FILE=out/tur_$TS.dump.enc" >> "$GITHUB_ENV"
+          echo "TS=$TS" >> "$GITHUB_ENV"
+          echo "URL_CLEAN=$URL" >> "$GITHUB_ENV"
+          ls -lh out
+
+      - name: GitHub'da saqlash (14 kun, faqat yopiq repoda)
+        if: ${{ github.event.repository.private }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: backup-${{ env.TS }}
+          path: ${{ env.FILE }}
+          retention-days: 14
+
+      - name: Telegram'ga yuborish
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: |
+          set -uo pipefail
+          [ -n "${TELEGRAM_BOT_TOKEN:-}" ] || { echo "Telegram sozlanmagan — o'tkazib yuborildi"; exit 0; }
+          CHAT=$(docker run --rm postgres:17-alpine psql "$URL_CLEAN" -Atqc \
+            "SELECT telegram_chat_id FROM users WHERE role='super_admin' AND is_active AND telegram_chat_id IS NOT NULL ORDER BY id LIMIT 1" || true)
+          [ -n "$CHAT" ] || { echo "Super admin Telegramni ulamagan — o'tkazib yuborildi"; exit 0; }
+          curl -fsS -o /dev/null -F chat_id="$CHAT" -F document=@"$FILE" \
+            -F caption="🗄 Zaxira nusxa $TS. Ochish uchun BACKUP_PASSWORD kerak." \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendDocument" && echo "Yuborildi"

@@ -1,7 +1,7 @@
 from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,7 +13,7 @@ from app.models import (
 )
 from app.core import cards
 from app.services.common import get_usd_rate, notify
-from app.services.payouts import due_items, due_rows, next_pay_day, resolve_cutoff
+from app.services.payouts import due_items, due_rows, next_pay_day, resolve_cutoff, split_fines
 
 router = APIRouter(tags=["boshliq"])
 boss_only = require_roles(Role.boss)
@@ -137,12 +137,12 @@ class PayIn(BaseModel):
 async def pay(data: PayIn, user: User = Depends(boss_only), db: AsyncSession = Depends(get_db)):
     """Boshliq kartaga o'tkazgach «To'ladim» deydi → to'lov yaratiladi, oluvchiga xabar boradi.
     Oluvchi «Ha, oldim» desa to'lov yakunlanadi."""
-    earns, fines = await due_rows(db, user.id, resolve_cutoff(data.until, data.all))
-    earns = [e for e in earns if e.user_id == data.user_id]
-    fines = [f for f in fines if f.user_id == data.user_id]
-    if not earns and not fines:
-        raise HTTPException(404, "Bu odamga to'lanadigan summa yo'q")
-    gross, ftotal = sum(e.amount for e in earns), sum(f.amount for f in fines)
+    earns, fines = await due_rows(db, user.id, resolve_cutoff(data.until, data.all), user_id=data.user_id, lock=True)
+    if not earns:
+        raise HTTPException(404, "Bu odamga to'lanadigan summa yo'q (allaqachon to'langan bo'lishi mumkin)")
+    gross = sum(e.amount for e in earns)
+    fines, _carried = split_fines(gross, fines)  # haqdan oshgan jarimalar keyingi to'lovga qoladi
+    ftotal = sum(f.amount for f in fines)
     p = Payment(boss_id=user.id, user_id=data.user_id, tours_count=len({e.tour_id for e in earns}),
                 gross=gross, fines_total=ftotal, net=gross - ftotal)
     db.add(p)
@@ -158,11 +158,48 @@ async def pay(data: PayIn, user: User = Depends(boss_only), db: AsyncSession = D
 
 
 @router.get("/boss/payouts")
-async def payout_history(user: User = Depends(boss_only), db: AsyncSession = Depends(get_db)):
-    rows = (await db.execute(select(Payment).where(Payment.boss_id == user.id).order_by(Payment.id.desc()))).scalars().all()
+async def payout_history(limit: int = Query(100, ge=1, le=500), offset: int = Query(0, ge=0),
+                         user: User = Depends(boss_only), db: AsyncSession = Depends(get_db)):
+    rows = (await db.execute(select(Payment).where(Payment.boss_id == user.id).order_by(Payment.id.desc())
+                             .limit(limit).offset(offset))).scalars().all()
     return [dict(id=p.id, user_id=p.user_id, full_name=p.user.full_name, tours_count=p.tours_count, gross=p.gross,
                  fines=p.fines_total, net=p.net, status=p.status.value, created_at=p.created_at,
-                 confirmed_at=p.confirmed_at) for p in rows]
+                 confirmed_at=p.confirmed_at, dispute_reason=p.dispute_reason) for p in rows]
+
+
+class DisputeIn(BaseModel):
+    reason: str = Field("", max_length=500)
+
+
+@router.post("/payments/{payment_id}/dispute")
+async def dispute_payment(payment_id: int, data: DisputeIn, user: User = Depends(get_current_user),
+                          db: AsyncSession = Depends(get_db)):
+    """Oluvchi: «Pul kelmadi» — boshliqqa xabar boradi, to'lov e'tiroz holatiga o'tadi."""
+    p = await db.get(Payment, payment_id)
+    if p is None or p.user_id != user.id:
+        raise HTTPException(404, "To'lov topilmadi")
+    if p.status == PayStatus.confirmed:
+        raise HTTPException(409, "To'lov allaqachon tasdiqlangan")
+    p.status, p.dispute_reason = PayStatus.disputed, (data.reason or "").strip() or None
+    await notify(db, [p.boss_id], f"⚠️ {user.full_name} {p.net:,} so'm to'lov kelmaganini bildirdi."
+                 + (f" Izoh: {p.dispute_reason}" if p.dispute_reason else "") + " «To'lovlar» bo'limini tekshiring.", user.id)
+    await db.commit()
+    return {"ok": True, "status": p.status.value}
+
+
+@router.post("/boss/payouts/{payment_id}/resend")
+async def resend_payment(payment_id: int, user: User = Depends(boss_only), db: AsyncSession = Depends(get_db)):
+    """Boshliq: e'tirozni ko'rib chiqib, pulni qayta o'tkazgach — oluvchidan yana tasdiq so'raladi."""
+    p = await db.get(Payment, payment_id)
+    if p is None or p.boss_id != user.id:
+        raise HTTPException(404, "To'lov topilmadi")
+    if p.status != PayStatus.disputed:
+        raise HTTPException(400, "Faqat e'tiroz bildirilgan to'lovni qayta yuborish mumkin")
+    p.status = PayStatus.paid_by_boss
+    await notify(db, [p.user_id], f"Boshliq {user.full_name} {p.net:,} so'm to'lovni qayta tekshirib yubordi. "
+                 "Pul tushgan bo'lsa «Hisobim» bo'limida «Ha, oldim» ni bosing.", user.id)
+    await db.commit()
+    return {"ok": True, "status": p.status.value}
 
 
 @router.post("/payments/{payment_id}/confirm")
@@ -189,14 +226,21 @@ async def my_account(user: User = Depends(require_roles(Role.guide, Role.driver,
         Fine.user_id == user.id, Fine.payment_id.is_(None)))).scalar_one()
     pays = (await db.execute(select(Payment).where(Payment.user_id == user.id).order_by(Payment.id.desc()))).scalars().all()
     from app.services.common import driver_rating
+    practice = cert_code = None
+    if user.role == Role.guide:
+        from app.models import Certificate
+        from app.services.certificates import practice_progress
+        practice = await practice_progress(db, user.id)
+        c = (await db.execute(select(Certificate).where(Certificate.user_id == user.id))).scalar_one_or_none()
+        cert_code = c.code if c and not c.revoked else None
     return {
-        "unpaid_earnings": unpaid, "unpaid_fines": fines, "to_receive": unpaid - fines,
-        "payments": [dict(id=p.id, net=p.net, status=p.status.value, created_at=p.created_at) for p in pays],
+        "unpaid_earnings": unpaid, "unpaid_fines": fines, "to_receive": max(0, unpaid - fines),
+        "payments": [dict(id=p.id, net=p.net, status=p.status.value, created_at=p.created_at,
+                          dispute_reason=p.dispute_reason) for p in pays],
         "rating": await driver_rating(db, user.id) if user.role == Role.driver else None,
         "guide": ({"level": user.guide_profile.level, "level_tours": user.guide_profile.level_tours,
                    "completed_tours": user.guide_profile.completed_tours,
-                   "practice_done": user.guide_profile.practice_done,
-                   "interview_passed": user.guide_profile.interview_passed,
+                   "practice": practice, "certificate": cert_code,
                    "languages": user.guide_profile.languages or []}
-                  if user.role == Role.guide else None),
+                  if user.role == Role.guide and user.guide_profile else None),
     }

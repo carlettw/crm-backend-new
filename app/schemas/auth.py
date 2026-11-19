@@ -30,6 +30,7 @@ class TokenOut(BaseModel):
     access_token: str
     refresh_token: str
     token_type: str = "bearer"
+    must_change_password: bool = False
 
 
 class RefreshIn(BaseModel):
@@ -43,6 +44,5 @@ class ChangePasswordIn(BaseModel):
     @field_validator("new_password")
     @classmethod
     def _len(cls, v):
-        if len(v) < 6:
-            raise ValueError("Parol kamida 6 belgi bo'lishi kerak")
-        return v
+        from app.schemas.user import strong_password
+        return strong_password(v)

@@ -10,12 +10,20 @@ from app.core.regions import clean_regions
 from app.schemas.auth import normalize_phone
 
 
+def strong_password(v: str) -> str:
+    if len(v) < 8:
+        raise ValueError("Parol kamida 8 belgi bo'lishi kerak")
+    if v.isdigit() or v.isalpha():
+        raise ValueError("Parolda harf ham, raqam ham bo'lsin")
+    return v
+
+
 class UserCreate(BaseModel):
     role: Role
     phone: str
     username: str
     full_name: str = Field(min_length=2, max_length=120)
-    password: str = Field(min_length=6)
+    password: str
     # rolga xos maydonlar
     boss_percent: float | None = Field(default=None, ge=0, le=100)
     guide_level: int | None = Field(default=None, ge=1, le=7)
@@ -37,6 +45,11 @@ class UserCreate(BaseModel):
     @classmethod
     def _phone(cls, v):
         return normalize_phone(v)
+
+    @field_validator("password")
+    @classmethod
+    def _pw(cls, v):
+        return strong_password(v)
 
     @field_validator("username")
     @classmethod
@@ -77,6 +90,7 @@ class UserOut(BaseModel):
     regions: list[str] | None = None
     has_card: bool = False
     telegram_linked: bool = False
+    must_change_password: bool = False
 
 
 class UserListOut(BaseModel):
@@ -89,7 +103,12 @@ class ActiveIn(BaseModel):
 
 
 class ResetPasswordIn(BaseModel):
-    new_password: str = Field(min_length=6)
+    new_password: str
+
+    @field_validator("new_password")
+    @classmethod
+    def _pw(cls, v):
+        return strong_password(v)
 
 
 class LevelRateIn(BaseModel):

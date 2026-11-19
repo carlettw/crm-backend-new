@@ -1,5 +1,7 @@
+from datetime import timedelta
+
 from fastapi import HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.languages import LANGUAGES
@@ -8,6 +10,10 @@ from app.core.timeutil import CANCEL_LIMIT, TZ, aware, now
 from app.models import (
     AppSetting, GuideProfile, LevelRate, Message, Rating, Role, Tour, TourStatus, UsdRateLog, User,
 )
+
+ACTIVE = (TourStatus.open, TourStatus.ready, TourStatus.awaiting_approval)
+MIN_TOUR_DURATION = timedelta(hours=3)   # nuqtalar davomiyligi kiritilmagan bo'lsa tur shuncha davom etadi deb olinadi
+BUSY_GAP = timedelta(minutes=30)         # ikki tur orasida kamida shuncha vaqt bo'lishi kerak
 
 SETTING_DEFAULTS = {"admin_fee_usd": "2"}
 DEFAULT_USD_RATE = 12700.0
@@ -75,6 +81,34 @@ def recompute_status(t: Tour):
         t.status = TourStatus.ready if (t.guide_id and (t.driver_id or not t.needs_driver)) else TourStatus.open
 
 
+def tour_window(t: Tour) -> tuple:
+    """Turning taxminiy boshlanish va tugash vaqti (nuqtalardagi daqiqalar yig'indisi, kamida 3 soat)."""
+    start = aware(t.start_at)
+    dur = timedelta(minutes=sum((s.duration_minutes or 0) for s in t.stops))
+    return start, start + max(dur, MIN_TOUR_DURATION)
+
+
+async def find_conflict(db: AsyncSession, user_id: int, t: Tour, start=None) -> Tour | None:
+    """Ishchining shu vaqtga to'g'ri keladigan boshqa faol turi (gid yoki haydovchi sifatida)."""
+    s0, e0 = tour_window(t)
+    if start is not None:
+        e0, s0 = start + (e0 - s0), start
+    rows = (await db.execute(select(Tour).where(
+        or_(Tour.guide_id == user_id, Tour.driver_id == user_id), Tour.id != t.id, Tour.status.in_(ACTIVE),
+        Tour.start_at > s0 - timedelta(days=2), Tour.start_at < e0 + timedelta(days=1)))).scalars().all()
+    for o in rows:
+        s1, e1 = tour_window(o)
+        if s0 < e1 + BUSY_GAP and s1 < e0 + BUSY_GAP:
+            return o
+    return None
+
+
+async def ensure_free(db: AsyncSession, user_id: int, t: Tour, who: str = "Siz", start=None):
+    o = await find_conflict(db, user_id, t, start)
+    if o is not None:
+        raise HTTPException(409, f"{who} shu vaqtda boshqa turda band: «{o.title}» ({fmt_dt(o.start_at)})")
+
+
 def hours_left_ok(t: Tour) -> bool:
     """Boshlanishiga kamida 24 soat qolgan bo'lsa ishchi o'zi bekor qila oladi."""
     return aware(t.start_at) - now() >= CANCEL_LIMIT
@@ -87,7 +121,8 @@ def fmt_dt(dt) -> str:
 def left_text(h: float) -> str:
     if h <= 0:
         return "allaqachon boshlangan"
-    hh, mm = int(h), int(round((h - int(h)) * 60))
+    total = int(round(h * 60))
+    hh, mm = divmod(total, 60)
     return " ".join(x for x in (f"{hh} soat" if hh else "", f"{mm} daqiqa" if mm or not hh else "") if x)
 
 
@@ -107,11 +142,9 @@ def offer_text(t: Tour, role: str, amount: int) -> str:
 
 
 async def level_up_check(db: AsyncSession, gp: GuideProfile):
-    """Daraja avtomatik ko'tarilishi: 1->2 (ikki chekboks), 2->3 (5 tur), 3->4 (15 tur)."""
+    """Daraja avtomatik ko'tarilishi: 2->3 (5 tur), 3->4 (15 tur). 1->2 sertifikat berilganda (services/certificates.py)."""
     old = gp.level
-    if gp.level == 1 and gp.practice_done and gp.interview_passed:
-        gp.level, gp.level_tours = 2, 0
-    elif gp.level == 2 and gp.level_tours >= 5:
+    if gp.level == 2 and gp.level_tours >= 5:
         gp.level, gp.level_tours = 3, 0
     elif gp.level == 3 and gp.level_tours >= 15:
         gp.level, gp.level_tours = 4, 0
@@ -140,7 +173,8 @@ async def finalize_tour(db: AsyncSession, t: Tour, by_admin: bool = False):
 
     admin = await db.get(User, t.created_by)
     admin_cost = 0
-    if admin and admin.role == Role.admin:
+    # admin haqi faqat tur haqiqatda o'tganda (gid yoki haydovchi qatnashgan) yoziladi
+    if admin and admin.role == Role.admin and (t.guide_id or t.driver_id):
         admin_cost = int(round(float(await get_setting(db, "admin_fee_usd")) * await get_usd_rate(db)))
     t.admin_cost = admin_cost
     t.profit = t.total_price - t.platform_fee - guide_pay - driver_pay - admin_cost
@@ -161,11 +195,9 @@ async def finalize_tour(db: AsyncSession, t: Tour, by_admin: bool = False):
     apps = (await db.execute(select(TourApplication).where(
         TourApplication.tour_id == t.id, TourApplication.kind == AppKind.practice,
         TourApplication.status == AppStatus.approved))).scalars().all()
+    from app.services.certificates import maybe_issue
     for a in apps:
-        pgp = (await db.execute(select(GuideProfile).where(GuideProfile.user_id == a.user_id))).scalar_one_or_none()
-        if pgp and pgp.level == 1:
-            pgp.practice_done = True
-            await level_up_check(db, pgp)
+        await maybe_issue(db, a.user_id)  # 3 xil turda amaliyot tugagan bo'lsa sertifikat beriladi
 
     # pul hisobga o'tganini ishchilarga bildirish
     who = "Admin tomonidan yakunlandi." if by_admin else "Admin tasdiqladi."
@@ -176,3 +208,28 @@ async def finalize_tour(db: AsyncSession, t: Tour, by_admin: bool = False):
     if not by_admin:
         await notify(db, [t.created_by], f"«{t.title}» ({fmt_dt(t.start_at)}) yakunlandi."
                      + (" Kechikish haqida xabar bo'lgan: jarima bor-yo'qligini belgilang." if t.late_reported else ""))
+
+
+async def release_worker(db: AsyncSession, user: User, by_user_id: int, reason: str):
+    """Faolsizlantirilgan gid/haydovchini kelgusi faol turlaridan chiqaradi va adminlarga xabar beradi."""
+    from app.models import AppKind, AppStatus, TourApplication, TourCancellation
+    tours = (await db.execute(select(Tour).where(
+        or_(Tour.guide_id == user.id, Tour.driver_id == user.id),
+        Tour.status.in_((TourStatus.open, TourStatus.ready))))).scalars().all()
+    for t in tours:
+        role = "guide" if t.guide_id == user.id else "driver"
+        if role == "guide":
+            t.guide_id, t.guide_confirmed_at = None, None
+        else:
+            t.driver_id, t.driver_confirmed_at = None, None
+        db.add(TourCancellation(tour_id=t.id, user_id=user.id, role=role, by_user_id=by_user_id, by_admin=True, reason=reason))
+        recompute_status(t)
+        await notify(db, [t.created_by], f"{user.full_name} faolsizlantirildi va «{t.title}» ({fmt_dt(t.start_at)}) "
+                     f"turidan chiqarildi. O'rin bo'shadi — qayta yuboring.")
+    apps = (await db.execute(select(TourApplication).where(
+        TourApplication.user_id == user.id, TourApplication.status.in_((AppStatus.pending, AppStatus.approved))))).scalars().all()
+    for a in apps:
+        t = await db.get(Tour, a.tour_id)
+        if t and t.status in (TourStatus.draft, TourStatus.open, TourStatus.ready):
+            a.status = AppStatus.withdrawn
+    return len(tours)

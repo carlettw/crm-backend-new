@@ -6,7 +6,7 @@ from datetime import datetime
 from sqlalchemy import select
 
 from app.core.timeutil import TZ, today_local
-from app.db.session import SessionLocal
+from app.db.session import SessionLocal, try_lock
 from app.models import AppSetting, Role, User
 from app.services.common import notify
 from app.services.payouts import default_cutoff, due_items
@@ -18,6 +18,8 @@ KEY = "last_weekly_reminder"
 async def send_weekly_reminders(db, force: bool = False) -> int:
     today = today_local()
     if not force and (today.weekday() != 0 or datetime.now(TZ).hour < 9):
+        return 0
+    if not await try_lock(db, 7301):  # boshqa server nusxasi hozir yuboryapti
         return 0
     row = await db.get(AppSetting, KEY)
     if not force and row and row.value == today.isoformat():

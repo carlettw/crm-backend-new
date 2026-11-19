@@ -8,7 +8,7 @@ from sqlalchemy import func, select, update
 
 from app.core.config import settings
 from app.core.timeutil import now
-from app.db.session import SessionLocal
+from app.db.session import SessionLocal, try_lock
 from app.models import Message, User
 
 log = logging.getLogger("telegram")
@@ -81,6 +81,8 @@ def _format(m: Message, u: User, multi: bool) -> str:
 async def send_pending() -> int:
     """Hali Telegramga yuborilmagan xabarlarni yuboradi (faqat ulangandan keyingilarini)."""
     async with SessionLocal() as db:
+        if not await try_lock(db, 7302):  # boshqa server nusxasi (yoki cron) hozir yuboryapti
+            return 0
         rows = (await db.execute(
             select(Message, User).join(User, User.id == Message.recipient_id).where(
                 User.telegram_chat_id.is_not(None), Message.tg_sent_at.is_(None),

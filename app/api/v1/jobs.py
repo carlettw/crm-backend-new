@@ -1,7 +1,7 @@
 from datetime import timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import or_, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.languages import LANGUAGES
@@ -11,11 +11,11 @@ from app.core.timeutil import START_GRACE, aware, local_day_range, now, today_lo
 from app.db.session import get_db
 from app.models import (
     AppKind, AppStatus, GuideProfile, Rating, Role, Tour, TourApplication, TourCancellation,
-    TourStatus, User,
+    TourComment, TourStatus, User,
 )
-from app.schemas.tour import LateIn, RateIn, ReasonIn
+from app.schemas.tour import CommentIn, LateIn, RateIn, ReasonIn
 from app.services.common import (
-    driver_rating, finalize_tour, hours_left_ok, notify, recompute_status,
+    driver_rating, ensure_free, fmt_dt, hours_left_ok, notify, recompute_status,
 )
 from app.services.tourview import job_view
 
@@ -33,42 +33,42 @@ async def _tour(db, tour_id) -> Tour:
 
 
 # ---------------- GID ----------------
+def _gp(user: User):
+    if user.guide_profile is None:
+        raise HTTPException(404, "Gid profili topilmadi. Super adminga murojaat qiling")
+    return user.guide_profile
+
+
 @router.get("/guide/available")
-async def guide_available(user: User = Depends(guide_only), db: AsyncSession = Depends(get_db)):
+async def guide_available(limit: int = Query(100, ge=1, le=300), offset: int = Query(0, ge=0),
+                          user: User = Depends(guide_only), db: AsyncSession = Depends(get_db)):
     """2+ daraja: o'z darajasiga mos, hali gid olmagan turlar."""
-    lvl = user.guide_profile.level
+    lvl = _gp(user).level
     if lvl < 2:
         return []
     q = select(Tour).where(Tour.status == TourStatus.open, Tour.guide_id.is_(None),
                            Tour.min_guide_level <= lvl, Tour.start_at > now() - START_GRACE).order_by(Tour.start_at)
     langs = user.guide_profile.languages or []
     regs = user.guide_profile.regions or []
-    return [job_view(t, "guide", lvl) for t in (await db.execute(q)).scalars().all() if set(t.languages) <= set(langs) and (not t.region or t.region in regs)]
-
-
-@router.get("/guide/practice-available")
-async def practice_available(user: User = Depends(guide_only), db: AsyncSession = Depends(get_db)):
-    """1-daraja: yaqin 48 soat ichidagi turlar (yordamchi sifatida ariza berish uchun)."""
-    if user.guide_profile.level != 1:
-        return []
-    q = select(Tour).where(Tour.status.in_([TourStatus.open, TourStatus.ready]),
-                           Tour.start_at > now() - START_GRACE, Tour.start_at < now() + timedelta(hours=48)).order_by(Tour.start_at)
-    return [job_view(t, "guide", 1) for t in (await db.execute(q)).scalars().all()]
+    items = [t for t in (await db.execute(q)).scalars().all()
+             if set(t.languages) <= set(langs) and (not t.region or t.region in regs)]
+    return [job_view(t, "guide", lvl) for t in items[offset:offset + limit]]
 
 
 @router.get("/guide/mine")
-async def guide_mine(user: User = Depends(guide_only), db: AsyncSession = Depends(get_db)):
-    lvl = user.guide_profile.level
+async def guide_mine(limit: int = Query(200, ge=1, le=500), offset: int = Query(0, ge=0),
+                     user: User = Depends(guide_only), db: AsyncSession = Depends(get_db)):
+    lvl = _gp(user).level
     tours = (await db.execute(select(Tour).where(Tour.guide_id == user.id, Tour.status != TourStatus.draft)
-                              .order_by(Tour.start_at.desc()))).scalars().all()
+                              .order_by(Tour.start_at.desc()).limit(limit).offset(offset))).scalars().all()
     out = [job_view(t, "guide", lvl, detail=True) for t in tours]
-    apps = (await db.execute(select(TourApplication).where(
+    practice = (await db.execute(select(Tour).join(TourApplication, TourApplication.tour_id == Tour.id).where(
         TourApplication.user_id == user.id, TourApplication.kind == AppKind.practice,
-        TourApplication.status.in_([AppStatus.pending, AppStatus.approved])))).scalars().all()
-    for a in apps:
-        t = await db.get(Tour, a.tour_id)
-        v = job_view(t, "guide", 1, detail=a.status == AppStatus.approved)
-        v.update(is_practice=True, application_status=a.status.value)
+        TourApplication.status == AppStatus.approved, Tour.status != TourStatus.draft)
+        .order_by(Tour.start_at.desc()).limit(limit))).scalars().unique().all()  # admin biriktirgan amaliyot turlari
+    for t in practice:
+        v = job_view(t, "guide", 1, detail=True)
+        v.update(is_practice=True)
         out.append(v)
     return out
 
@@ -77,7 +77,7 @@ async def guide_mine(user: User = Depends(guide_only), db: AsyncSession = Depend
 async def guide_accept(tour_id: int, user: User = Depends(guide_only), db: AsyncSession = Depends(get_db)):
     """Birinchi rozi bo'lgan gidni tizim avtomatik tanlaydi."""
     t = await _tour(db, tour_id)
-    lvl = user.guide_profile.level
+    lvl = _gp(user).level
     if lvl < 2 or t.min_guide_level is None or lvl < t.min_guide_level:
         raise HTTPException(403, "Bu tur sizning darajangizga mos emas")
     if t.region and t.region not in (user.guide_profile.regions or []):
@@ -87,6 +87,7 @@ async def guide_accept(tour_id: int, user: User = Depends(guide_only), db: Async
         raise HTTPException(403, f"Bu tur {', '.join(missing)} tilida ham o'tadi. Sizning tillaringizda yo'q — profilingizda tillarni yangilang")
     if aware(t.start_at) <= now() - START_GRACE:
         raise HTTPException(400, "Tur vaqti o'tgan")
+    await ensure_free(db, user.id, t)  # shu vaqtda boshqa turi bo'lsa ololmaydi
     res = await db.execute(update(Tour).where(
         Tour.id == tour_id, Tour.guide_id.is_(None), Tour.status == TourStatus.open
     ).values(guide_id=user.id))
@@ -101,36 +102,12 @@ async def guide_accept(tour_id: int, user: User = Depends(guide_only), db: Async
     return job_view(t, "guide", lvl, detail=True)
 
 
-@router.post("/tours/{tour_id}/practice/apply", status_code=201)
-async def practice_apply(tour_id: int, user: User = Depends(guide_only), db: AsyncSession = Depends(get_db)):
-    if user.guide_profile.level != 1:
-        raise HTTPException(403, "Amaliyot arizasi faqat 1-daraja uchun")
-    if user.guide_profile.practice_done:
-        raise HTTPException(400, "Amaliyot tur allaqachon bajarilgan")
-    t = await _tour(db, tour_id)
-    if t.status not in (TourStatus.open, TourStatus.ready) or aware(t.start_at) <= now() - START_GRACE:
-        raise HTTPException(400, "Bu turga ariza berib bo'lmaydi")
-    if aware(t.start_at) - now() > timedelta(hours=48):
-        raise HTTPException(400, "Amaliyot arizasi faqat yaqin (48 soat ichidagi) turlarga beriladi")
-    exists = (await db.execute(select(TourApplication).where(
-        TourApplication.tour_id == t.id, TourApplication.user_id == user.id,
-        TourApplication.kind == AppKind.practice))).scalar_one_or_none()
-    if exists and exists.status in (AppStatus.pending, AppStatus.approved):
-        raise HTTPException(409, "Ariza allaqachon yuborilgan")
-    if exists:
-        exists.status = AppStatus.pending
-    else:
-        db.add(TourApplication(tour_id=t.id, user_id=user.id, kind=AppKind.practice))
-    await notify(db, [t.created_by], f"Amaliyotchi gid {user.full_name} ({user.phone}) «{t.title}» turiga ariza yubordi.", user.id)
-    await db.commit()
-    return {"ok": True}
-
-
 # ---------------- HAYDOVCHI ----------------
 @router.get("/driver")
 async def driver_list(
     day: str = Query("all", pattern="^(all|today|tomorrow)$"),
     state: str = Query("free", pattern="^(free|mine)$"),
+    limit: int = Query(200, ge=1, le=500), offset: int = Query(0, ge=0),
     user: User = Depends(driver_only), db: AsyncSession = Depends(get_db),
 ):
     """state=free: band qilinmagan, state=mine: o'zim olgan (band qilingan). day=tomorrow — ertangi ishlar."""
@@ -147,7 +124,8 @@ async def driver_list(
         d = today_local() + (td(days=1) if day == "tomorrow" else td(0))
         s, e = local_day_range(d)
         q = q.where(Tour.start_at >= s, Tour.start_at < e)
-    tours = (await db.execute(q.order_by(Tour.start_at))).scalars().all()
+    order = Tour.start_at if state == "free" else Tour.start_at.desc()
+    tours = (await db.execute(q.order_by(order).limit(limit).offset(offset))).scalars().all()
     applied = set((await db.execute(select(TourApplication.tour_id).where(
         TourApplication.user_id == user.id, TourApplication.kind == AppKind.driver,
         TourApplication.status == AppStatus.pending))).scalars().all())
@@ -167,6 +145,7 @@ async def driver_apply(tour_id: int, user: User = Depends(driver_only), db: Asyn
         raise HTTPException(400, "Bu tur haydovchisiz (gid yolg'iz chiqadi)")
     if t.status not in (TourStatus.open, TourStatus.ready) or t.driver_id or aware(t.start_at) <= now() - START_GRACE:
         raise HTTPException(400, "Bu turga ariza berib bo'lmaydi")
+    await ensure_free(db, user.id, t)
     app = (await db.execute(select(TourApplication).where(
         TourApplication.tour_id == t.id, TourApplication.user_id == user.id,
         TourApplication.kind == AppKind.driver))).scalar_one_or_none()
@@ -206,14 +185,8 @@ async def worker_cancel(tour_id: int, data: ReasonIn, user: User = Depends(worke
         role = "guide"
     elif t.driver_id == user.id:
         role = "driver"
-    practice = None
-    if role is None and user.role == Role.guide:
-        practice = (await db.execute(select(TourApplication).where(
-            TourApplication.tour_id == t.id, TourApplication.user_id == user.id,
-            TourApplication.kind == AppKind.practice,
-            TourApplication.status.in_([AppStatus.pending, AppStatus.approved])))).scalar_one_or_none()
-    if role is None and practice is None:
-        raise HTTPException(404, "Siz bu turda ishtirok etmaysiz")
+    if role is None:
+        raise HTTPException(404, "Siz bu turda gid/haydovchi emassiz (amaliyotchini admin biriktiradi va bekor qiladi)")
     if not hours_left_ok(t):
         admin = await db.get(User, t.created_by)
         raise HTTPException(
@@ -221,13 +194,9 @@ async def worker_cancel(tour_id: int, data: ReasonIn, user: User = Depends(worke
             f"Tur boshlanishiga 24 soatdan kam vaqt qolgan, o'zingiz bekor qila olmaysiz. "
             f"Admin {admin.full_name} ({admin.phone}) bilan bog'laning — bekor qilishni admin amalga oshiradi.",
         )
-    if practice:
-        practice.status = AppStatus.withdrawn
-        db.add(TourCancellation(tour_id=t.id, user_id=user.id, role="practice", by_user_id=user.id, reason=data.reason))
-    else:
-        from app.api.v1.tours import _free_slot
-        await _free_slot(db, t, role, user.id, user.id, False, data.reason)
-    await notify(db, [t.created_by], f"{user.full_name} «{t.title}» ({t.start_at:%d.%m %H:%M}) turidan voz kechdi. "
+    from app.api.v1.tours import _free_slot
+    await _free_slot(db, t, role, user.id, user.id, False, data.reason)
+    await notify(db, [t.created_by], f"{user.full_name} «{t.title}» ({fmt_dt(t.start_at)}) turidan voz kechdi. "
                  f"Sabab: {data.reason or '—'}. O'rin bo'shadi, qayta yuborishingiz mumkin.", user.id)
     await db.commit()
     return {"ok": True}
@@ -238,6 +207,10 @@ async def report_late(tour_id: int, data: LateIn, user: User = Depends(worker), 
     t = await _tour(db, tour_id)
     if user.id not in (t.guide_id, t.driver_id):
         raise HTTPException(403, "Siz bu turda ishtirok etmaysiz")
+    if t.status not in (TourStatus.open, TourStatus.ready, TourStatus.awaiting_approval):
+        raise HTTPException(400, "Kechikish faqat faol tur bo'yicha xabar qilinadi")
+    if aware(t.start_at) - now() > timedelta(hours=6):
+        raise HTTPException(400, "Kechikish haqida tur boshlanishiga 6 soatdan kam qolganda xabar bering")
     t.late_reported = True
     await notify(db, [t.created_by], f"Kechikish xabari: {user.full_name}, «{t.title}». {data.note}", user.id)
     await db.commit()
@@ -279,3 +252,42 @@ async def rate_driver(tour_id: int, data: RateIn, user: User = Depends(guide_onl
     db.add(Rating(tour_id=t.id, driver_id=t.driver_id, guide_id=user.id, stars=data.stars))
     await db.commit()
     return {"ok": True}
+
+
+# ---------------- IZOHLAR (tur yakunlangach) ----------------
+async def _participant(db, t: Tour, user: User) -> bool:
+    if user.id in (t.guide_id, t.driver_id):
+        return True
+    return (await db.execute(select(TourApplication.id).where(
+        TourApplication.tour_id == t.id, TourApplication.user_id == user.id, TourApplication.kind == AppKind.practice,
+        TourApplication.status == AppStatus.approved))).first() is not None
+
+
+@router.get("/tours/{tour_id}/comments")
+async def my_comments(tour_id: int, user: User = Depends(worker), db: AsyncSession = Depends(get_db)):
+    """O'zi qoldirgan izohlar (boshqa ishchilarning izohlari ko'rinmaydi; admin va boshliq hammasini ko'radi)."""
+    t = await _tour(db, tour_id)
+    if not await _participant(db, t, user):
+        raise HTTPException(403, "Siz bu turda ishtirok etmaysiz")
+    rows = (await db.execute(select(TourComment).where(TourComment.tour_id == t.id, TourComment.user_id == user.id)
+                             .order_by(TourComment.id))).scalars().all()
+    return [dict(id=c.id, body=c.body, created_at=c.created_at) for c in rows]
+
+
+@router.post("/tours/{tour_id}/comments", status_code=201)
+async def add_comment(tour_id: int, data: CommentIn, user: User = Depends(worker), db: AsyncSession = Depends(get_db)):
+    """Tur yakunlangach (yoki admin tasdig'ini kutayotganda) izoh qoldirish."""
+    t = await _tour(db, tour_id)
+    if not await _participant(db, t, user):
+        raise HTTPException(403, "Siz bu turda ishtirok etmaysiz")
+    if t.status not in (TourStatus.awaiting_approval, TourStatus.completed):
+        raise HTTPException(400, "Izoh tur yakunlangandan keyin qoldiriladi")
+    n = (await db.execute(select(func.count()).select_from(TourComment).where(
+        TourComment.tour_id == t.id, TourComment.user_id == user.id))).scalar_one()
+    if n >= 10:
+        raise HTTPException(400, "Bir tur uchun ko'pi bilan 10 ta izoh")
+    c = TourComment(tour_id=t.id, user_id=user.id, role=user.role.value + ("_practice" if user.id not in (t.guide_id, t.driver_id) else ""), body=data.body.strip())
+    db.add(c)
+    await notify(db, [t.created_by], f"{user.full_name} «{t.title}» turi bo'yicha izoh qoldirdi: {data.body.strip()[:120]}", user.id)
+    await db.commit()
+    return {"id": c.id}

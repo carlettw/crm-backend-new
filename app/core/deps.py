@@ -16,12 +16,15 @@ async def get_current_user(
 ) -> User:
     if creds is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Token talab qilinadi")
-    user_id = decode_token(creds.credentials, "access")
-    if user_id is None:
+    dec = decode_token(creds.credentials, "access")
+    if dec is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Token yaroqsiz yoki muddati tugagan")
+    user_id, ver = dec
     user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
     if user is None or not user.is_active:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Foydalanuvchi topilmadi yoki faol emas")
+    if (user.token_version or 0) != ver:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Sessiya bekor qilingan, qayta kiring")
     return user
 
 

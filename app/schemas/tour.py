@@ -211,3 +211,11 @@ class RateIn(BaseModel):
 
 class LateIn(BaseModel):
     note: str = ""
+
+
+class CommentIn(BaseModel):
+    body: str = Field(min_length=1, max_length=2000)
+
+
+class TraineesIn(BaseModel):
+    user_ids: list[int] = Field(default_factory=list, max_length=50)

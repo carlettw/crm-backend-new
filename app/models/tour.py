@@ -2,11 +2,12 @@ import enum
 from datetime import datetime
 
 from sqlalchemy import (
-    Boolean, DateTime, Enum, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint, func,
+    Boolean, DateTime, Enum, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint, func,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.timeutil import URGENT_HOURS, aware, now
+from sqlalchemy import JSON
 from sqlalchemy import true as sa_true
 
 from app.db.base import Base
@@ -43,6 +44,7 @@ class EarnKind(str, enum.Enum):
 class PayStatus(str, enum.Enum):
     paid_by_boss = "paid_by_boss"
     confirmed = "confirmed"
+    disputed = "disputed"    # oluvchi "pul kelmadi" dedi
 
 
 def _enum(e, length=20):
@@ -244,12 +246,17 @@ class Payment(Base):
     status: Mapped[PayStatus] = mapped_column(_enum(PayStatus), default=PayStatus.paid_by_boss)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    dispute_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     user: Mapped[User] = relationship(foreign_keys=[user_id], lazy="joined")
 
 
 class Message(Base):
     __tablename__ = "messages"
+    __table_args__ = (
+        Index("ix_messages_recipient_unread", "recipient_id", "read_at"),
+        Index("ix_messages_tg_pending", "tg_sent_at", "id"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     sender_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)  # None = tizim
@@ -282,3 +289,32 @@ class UsdRateLog(Base):
     rate: Mapped[float] = mapped_column(Numeric(12, 2, asdecimal=False))
     set_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Certificate(Base):
+    """Amaliyotni muvaffaqiyatli tugatgan gidga beriladigan sertifikat (ochiq tekshiriladi)."""
+    __tablename__ = "certificates"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    code: Mapped[str] = mapped_column(String(20), unique=True, index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), unique=True)
+    holder_name: Mapped[str] = mapped_column(String(120))
+    issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    tours: Mapped[list] = mapped_column(JSON, default=list)  # [{"title", "date"}] — amaliyot o'tilgan 3 xil tur
+    revoked: Mapped[bool] = mapped_column(Boolean, default=False)
+    revoked_reason: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class TourComment(Base):
+    """Tur yakunlangach qoldiriladigan izoh."""
+    __tablename__ = "tour_comments"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tour_id: Mapped[int] = mapped_column(ForeignKey("tours.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    role: Mapped[str] = mapped_column(String(20))
+    body: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    user: Mapped[User] = relationship(lazy="joined")

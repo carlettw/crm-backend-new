@@ -5,23 +5,29 @@ services:
     plan: free
     healthCheckPath: /health
     envVars:
+      - key: ENVIRONMENT
+        value: production
       - key: DATABASE_URL        # Supabase Session pooler (postgresql+asyncpg://...)
         sync: false
       - key: SECRET_KEY
+        generateValue: true
+      - key: CRON_SECRET
         generateValue: true
       - key: DB_SSL
         value: "true"
       - key: AUTO_CREATE_TABLES
         value: "false"
-      - key: CORS_ORIGINS        # frontend manzili, masalan https://tur.netlify.app
+      - key: CORS_ORIGINS        # frontend manzili, masalan https://travel-operator.uz
         sync: false
       - key: TELEGRAM_BOT_TOKEN   # @BotFather bergan token
         sync: false
       - key: FRONTEND_URL         # masalan https://travel-operator.uz
         sync: false
+      - key: SENTRY_DSN           # ixtiyoriy
+        sync: false
       - key: FIRST_SUPERADMIN_USERNAME
         value: superadmin
       - key: FIRST_SUPERADMIN_PHONE
         value: "+998900000000"
-      - key: FIRST_SUPERADMIN_PASSWORD
+      - key: FIRST_SUPERADMIN_PASSWORD   # kamida 10 belgi, harf + raqam
         sync: false

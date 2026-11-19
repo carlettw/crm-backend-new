@@ -1,10 +1,29 @@
 import enum
 from datetime import datetime
 
-from sqlalchemy import JSON, BigInteger, Boolean, DateTime, Enum, ForeignKey, Integer, Numeric, String, func, text
+from sqlalchemy import JSON, BigInteger, Boolean, DateTime, Enum, ForeignKey, Integer, Numeric, String, false, func, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.types import TypeDecorator
 
 from app.db.base import Base
+
+
+class EncryptedString(TypeDecorator):
+    """Bazada shifrlangan (Fernet) holda saqlanadigan matn. Python tomonida oddiy satr."""
+    impl = String(255)
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return None
+        from app.core.security import encrypt_str
+        return encrypt_str(value)
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return None
+        from app.core.security import decrypt_str
+        return decrypt_str(value)
 
 
 class Role(str, enum.Enum):
@@ -27,9 +46,13 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(100))
     role: Mapped[Role] = mapped_column(Enum(Role, native_enum=False, length=20), index=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # tokenlarni bekor qilish uchun: parol o'zgarsa / "hamma qurilmalardan chiqish" bosilsa 1 ga oshadi
+    token_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    # super admin bergan (yoki tiklagan) parolni birinchi kirishda almashtirish majburiy
+    must_change_password: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
     # Telegram: bir odamning bir nechta hisobi bitta chatga ulanishi mumkin
-    # to'lov kartasi (faqat raqam va egasi; muddat va CVV saqlanmaydi)
-    card_number: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # to'lov kartasi (faqat raqam va egasi; muddat va CVV saqlanmaydi). Raqam bazada shifrlangan.
+    card_number: Mapped[str | None] = mapped_column(EncryptedString(), nullable=True)
     card_holder: Mapped[str | None] = mapped_column(String(80), nullable=True)
     telegram_chat_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
     telegram_linked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
