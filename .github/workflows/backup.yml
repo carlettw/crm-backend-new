@@ -1,5 +1,5 @@
 # Har kuni 03:00 (Toshkent) Supabase bazasining shifrlangan nusxasi:
-#  • GitHub'da 14 kun saqlanadi (Actions → shu ish → Artifacts) — faqat repo yopiq (private) bo'lsa
+#  • GitHub'da 14 kun saqlanadi (Actions → shu ish → Artifacts). Fayl AES-256 bilan shifrlangan — BACKUP_PASSWORD siz ochilmaydi
 #  • Telegram'ga yuboriladi (super admin Telegramni ulagan bo'lsa)
 # Kerakli Secrets (repo → Settings → Secrets and variables → Actions):
 #   DATABASE_URL       — Render'dagi bilan bir xil
@@ -43,8 +43,7 @@ jobs:
           echo "URL_CLEAN=$URL" >> "$GITHUB_ENV"
           ls -lh out
 
-      - name: GitHub'da saqlash (14 kun, faqat yopiq repoda)
-        if: ${{ github.event.repository.private }}
+      - name: GitHub'da saqlash (14 kun, shifrlangan)
         uses: actions/upload-artifact@v4
         with:
           name: backup-${{ env.TS }}
