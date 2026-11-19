@@ -91,9 +91,21 @@ async def unhandled(request: Request, exc: Exception):
     return JSONResponse(status_code=500, content={"detail": "Serverda kutilmagan xato. Birozdan keyin qayta urinib ko'ring"})
 
 
+@app.middleware("http")
+async def server_timing(request: Request, call_next):
+    # serverning o'zida ketgan vaqt (tarmoqsiz) — brauzerda Network → Timing'da ko'rinadi
+    import time
+    t0 = time.perf_counter()
+    response = await call_next(request)
+    response.headers["Server-Timing"] = f"app;dur={(time.perf_counter() - t0) * 1000:.1f}"
+    return response
+
+
 app.add_middleware(GZipMiddleware, minimum_size=800)
 app.add_middleware(
     CORSMiddleware,
+    max_age=7200,  # brauzer CORS tekshiruvini 2 soat eslab qoladi — har so'rovda qo'shimcha borib-kelish bo'lmaydi
+    expose_headers=["Server-Timing"],
     allow_origins=[o.strip() for o in settings.cors_origins.split(",") if o.strip()],
     # lokal sinov uchun istalgan port (localhost / 127.0.0.1) faqat development rejimida ruxsat etiladi
     allow_origin_regex=None if settings.is_production else r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
