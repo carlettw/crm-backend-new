@@ -29,7 +29,7 @@ jobs:
           OLD=$(norm "$OLD"); NEW=$(norm "$NEW")
           echo "::add-mask::$OLD"; echo "::add-mask::$NEW"
           [ "$OLD" != "$NEW" ] || { echo "Eski va yangi manzil bir xil!"; exit 1; }
-          PG="docker run --rm -i -v $PWD:/w postgres:17-alpine"
+          PG="docker run --rm -i -v $PWD:/w postgres:18-alpine"
           echo "== 1. Eski bazadan nusxa"
           $PG pg_dump "$OLD" --schema=public --no-owner --no-privileges -Fc -f /w/db.dump
           ls -lh db.dump

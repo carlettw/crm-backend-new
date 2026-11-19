@@ -33,7 +33,7 @@ jobs:
           echo "::add-mask::$URL"
           TS=$(TZ=Asia/Tashkent date +%Y%m%d_%H%M)
           mkdir -p out
-          docker run --rm -v "$PWD/out:/b" postgres:17-alpine \
+          docker run --rm -v "$PWD/out:/b" postgres:18-alpine \
             pg_dump "$URL" --schema=public --no-owner --no-privileges -Fc -f "/b/tur_$TS.dump"
           test -s "out/tur_$TS.dump"
           openssl enc -aes-256-cbc -pbkdf2 -salt -pass env:BACKUP_PASSWORD -in "out/tur_$TS.dump" -out "out/tur_$TS.dump.enc"
@@ -56,7 +56,7 @@ jobs:
         run: |
           set -uo pipefail
           [ -n "${TELEGRAM_BOT_TOKEN:-}" ] || { echo "Telegram sozlanmagan — o'tkazib yuborildi"; exit 0; }
-          CHAT=$(docker run --rm postgres:17-alpine psql "$URL_CLEAN" -Atqc \
+          CHAT=$(docker run --rm postgres:18-alpine psql "$URL_CLEAN" -Atqc \
             "SELECT telegram_chat_id FROM users WHERE role='super_admin' AND is_active AND telegram_chat_id IS NOT NULL ORDER BY id LIMIT 1" || true)
           [ -n "$CHAT" ] || { echo "Super admin Telegramni ulamagan — o'tkazib yuborildi"; exit 0; }
           curl -fsS -o /dev/null -F chat_id="$CHAT" -F document=@"$FILE" \
