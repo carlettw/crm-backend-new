@@ -32,6 +32,26 @@ if settings.sentry_dsn:
         log.warning("SENTRY_DSN berilgan, lekin sentry-sdk o'rnatilmagan")
 
 
+async def rekey_cards():
+    """Karta raqamlarini joriy kalitga o'tkazish (kalit almashtirilgandan keyin bir marta ishlaydi)."""
+    from sqlalchemy import text
+    from app.core.security import decrypt_str, encrypt_str, needs_rekey
+    try:
+        async with SessionLocal() as db:
+            rows = (await db.execute(text("SELECT id, card_number FROM users WHERE card_number IS NOT NULL"))).all()
+            n = 0
+            for uid, raw in rows:
+                if needs_rekey(raw):
+                    await db.execute(text("UPDATE users SET card_number = :c WHERE id = :i"),
+                                     {"c": encrypt_str(decrypt_str(raw)), "i": uid})
+                    n += 1
+            await db.commit()
+            if n:
+                log.info("%s ta karta raqami yangi kalit bilan qayta shifrlandi", n)
+    except Exception:  # pragma: no cover
+        log.exception("Kartalarni qayta shifrlashda xato")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     if settings.auto_create_tables:  # dev rejimi; productionda Alembic ishlatiladi
@@ -49,6 +69,7 @@ async def lifespan(app: FastAPI):
                 must_change_password=True,
             ))
             await db.commit()
+    await rekey_cards()
     tasks = [asyncio.create_task(weekly.weekly_loop())]  # dushanba eslatmasi
     if tg.enabled():  # Telegram: webhook o'rnatish va xabarlar navbatini yuborish
         tasks += [asyncio.create_task(tg.setup()), asyncio.create_task(tg.sender_loop())]

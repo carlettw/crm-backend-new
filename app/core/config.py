@@ -17,6 +17,8 @@ class Settings(BaseSettings):
     # karta raqamlarini shifrlash kaliti (ixtiyoriy). Bo'sh bo'lsa SECRET_KEY dan hosil qilinadi.
     # Diqqat: kalit o'zgarsa, saqlangan kartalarni o'qib bo'lmaydi.
     card_encryption_key: str = ""
+    # avvalgi karta kalitlari (vergul bilan) — faqat o'qish uchun; ishga tushishda yozuvlar yangi kalitga o'tkaziladi
+    card_old_keys: str = ""
     # tashqi cron (/api/v1/cron/tick) uchun kalit. Bo'sh bo'lsa SECRET_KEY dan hosil qilinadi.
     cron_secret: str = ""
     # Telegram bot (BotFather bergan token). Bo'sh bo'lsa Telegram o'chirilgan.

@@ -185,3 +185,24 @@ def test_production_settings_check():
         assert "SECRET_KEY" in str(e)
     else:
         raise AssertionError("xavfli sozlama o'tib ketdi")
+
+
+async def test_card_key_rotation_from_default_secret(client):
+    """SECRET_KEY qo'yilmagan holda shifrlangan karta yangi kalit qo'yilganda o'qiladi va qayta shifrlanadi."""
+    from cryptography.fernet import Fernet
+    import base64, hashlib
+    from app.main import rekey_cards
+    from app.core.security import needs_rekey
+    await _setup(client)
+    old = Fernet(base64.urlsafe_b64encode(hashlib.sha256(b"card:change-me").digest()))
+    token = old.encrypt(b"8600000000000007").decode()
+    async with SessionLocal() as db:
+        await db.execute(text("UPDATE users SET card_number=:c WHERE username='gid1'"), {"c": token})
+        await db.commit()
+    g = await login(client, "gid1")
+    assert (await g.get("/me/card"))["masked"] == "8600 **** **** 0007"
+    await rekey_cards()
+    async with SessionLocal() as db:
+        raw = (await db.execute(text("SELECT card_number FROM users WHERE username='gid1'"))).scalar_one()
+    assert raw != token and not needs_rekey(raw)
+    assert (await g.get("/me/card"))["masked"] == "8600 **** **** 0007"

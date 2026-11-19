@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 
 import bcrypt
 import jwt
-from cryptography.fernet import Fernet, InvalidToken
+from cryptography.fernet import Fernet, InvalidToken, MultiFernet
 
 from app.core.config import settings
 
@@ -61,10 +61,28 @@ def decode_token(token: str, expected_type: str) -> tuple[int, int] | None:
 
 
 # ---------- karta raqamini shifrlash ----------
-def _fernet() -> Fernet:
-    raw = settings.card_encryption_key or ("card:" + settings.secret_key)
-    key = base64.urlsafe_b64encode(hashlib.sha256(raw.encode()).digest())
-    return Fernet(key)
+from app.core.config import DEFAULT_SECRET  # noqa: E402
+
+
+def _key(raw: str) -> Fernet:
+    return Fernet(base64.urlsafe_b64encode(hashlib.sha256(raw.encode()).digest()))
+
+
+def _primary_raw() -> str:
+    return settings.card_encryption_key or ("card:" + settings.secret_key)
+
+
+def _old_raws() -> list[str]:
+    """Eski kalitlar: faqat o'qish uchun (yozuvlar ishga tushishda yangi kalitga o'tkaziladi).
+    Standart "change-me" dan hosil bo'lgan kalit doim shu ro'yxatda — SECRET_KEY qo'yilmagan holda
+    shifrlangan kartalar yangi kalit qo'yilganda yo'qolmasin."""
+    olds = [k.strip() for k in settings.card_old_keys.split(",") if k.strip()]
+    olds.append("card:" + DEFAULT_SECRET)
+    return [k for k in dict.fromkeys(olds) if k != _primary_raw()]
+
+
+def _fernet() -> MultiFernet:
+    return MultiFernet([_key(_primary_raw())] + [_key(k) for k in _old_raws()])
 
 
 def encrypt_str(value: str) -> str:
@@ -80,6 +98,19 @@ def decrypt_str(value: str) -> str | None:
         return _fernet().decrypt(value.encode()).decode()
     except InvalidToken:
         return None
+
+
+def needs_rekey(value: str | None) -> bool:
+    """Yozuv joriy kalit bilan emas (eski kalit yoki shifrlanmagan) — qayta shifrlash kerak."""
+    if not value:
+        return False
+    if value.isdigit():
+        return True
+    try:
+        _key(_primary_raw()).decrypt(value.encode())
+        return False
+    except InvalidToken:
+        return decrypt_str(value) is not None
 
 
 def derived_secret(purpose: str) -> str:
