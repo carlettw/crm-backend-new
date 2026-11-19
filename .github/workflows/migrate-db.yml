@@ -34,7 +34,7 @@ jobs:
           $PG pg_dump "$OLD" --schema=public --no-owner --no-privileges -Fc -f /w/db.dump
           ls -lh db.dump
           echo "== 2. Yangi bazani tozalash"
-          $PG psql "$NEW" -v ON_ERROR_STOP=1 -qc "SET client_min_messages=warning; DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public; GRANT USAGE ON SCHEMA public TO anon, authenticated, service_role;"
+          $PG psql "$NEW" -v ON_ERROR_STOP=1 -qc "SET client_min_messages=warning; DO \$\$ DECLARE r record; BEGIN FOR r IN SELECT tablename FROM pg_tables WHERE schemaname='public' LOOP EXECUTE 'DROP TABLE IF EXISTS public.' || quote_ident(r.tablename) || ' CASCADE'; END LOOP; END \$\$;"
           echo "== 3. Tiklash"
           $PG pg_restore -d "$NEW" --no-owner --no-privileges /w/db.dump 2> restore.log || true
           grep -i "error" restore.log | grep -v 'schema "public" already exists' | grep -v 'errors ignored' | grep -v 'Error from TOC' && { cat restore.log; exit 1; } || true
