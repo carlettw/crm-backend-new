@@ -1,0 +1,47 @@
+# Bir martalik: bazani eski Supabase loyihasidan yangisiga ko'chirish.
+# Secrets: OLD_DATABASE_URL (eski), NEW_DATABASE_URL (yangi). Actions → "Bazani ko'chirish" → Run workflow.
+# Yangi bazadagi public sxemasi to'liq almashtiriladi. Eski baza o'zgarmaydi.
+name: Bazani ko'chirish
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Tasdiqlash uchun KOCHIR deb yozing"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  migrate:
+    if: ${{ github.event.inputs.confirm == 'KOCHIR' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Ko'chirish
+        env:
+          OLD: ${{ secrets.OLD_DATABASE_URL }}
+          NEW: ${{ secrets.NEW_DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          norm() { local u="${1/postgresql+asyncpg:/postgresql:}"; case "$u" in *sslmode=*) ;; *\?*) u="$u&sslmode=require";; *) u="$u?sslmode=require";; esac; echo "$u"; }
+          OLD=$(norm "$OLD"); NEW=$(norm "$NEW")
+          echo "::add-mask::$OLD"; echo "::add-mask::$NEW"
+          [ "$OLD" != "$NEW" ] || { echo "Eski va yangi manzil bir xil!"; exit 1; }
+          PG="docker run --rm -i -v $PWD:/w postgres:17-alpine"
+          echo "== 1. Eski bazadan nusxa"
+          $PG pg_dump "$OLD" --schema=public --no-owner --no-privileges -Fc -f /w/db.dump
+          ls -lh db.dump
+          echo "== 2. Yangi bazani tozalash"
+          $PG psql "$NEW" -v ON_ERROR_STOP=1 -qc "SET client_min_messages=warning; DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public; GRANT USAGE ON SCHEMA public TO anon, authenticated, service_role;"
+          echo "== 3. Tiklash"
+          $PG pg_restore -d "$NEW" --no-owner --no-privileges /w/db.dump 2> restore.log || true
+          grep -i "error" restore.log | grep -v 'schema "public" already exists' | grep -v 'errors ignored' | grep -v 'Error from TOC' && { cat restore.log; exit 1; } || true
+          echo "== 4. Tekshirish: har bir jadvaldagi qatorlar soni"
+          Q="SELECT string_agg(t || '=' || (xpath('/row/c/text()', query_to_xml('select count(*) as c from public.\"' || t || '\"', false, true, '')))[1]::text, ',' ORDER BY t) FROM (SELECT tablename t FROM pg_tables WHERE schemaname='public') s"
+          A=$($PG psql "$OLD" -Atqc "$Q"); B=$($PG psql "$NEW" -Atqc "$Q")
+          echo "eski:  $A"; echo "yangi: $B"
+          [ "$A" = "$B" ] || { echo "Qatorlar soni mos emas!"; exit 1; }
+          $PG psql "$NEW" -Atqc "SELECT 'alembic: ' || version_num FROM alembic_version"
+          echo "✔ Ko'chirish muvaffaqiyatli"
