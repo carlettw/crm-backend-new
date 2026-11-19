@@ -27,7 +27,10 @@ async def tick(key: str = Query("")):
         raise HTTPException(403, "Kalit noto'g'ri")
     from sqlalchemy import text
     async with SessionLocal() as db:
-        await db.execute(text("SELECT 1"))  # Supabase bepul bazasi "faolsiz" deb to'xtab qolmasligi uchun
+        if "supabase" in settings.database_url:
+            # Supabase bepul bazasi "faolsiz" deb to'xtab qolmasligi uchun.
+            # Neon'da kerak emas (u loyihani to'xtatmaydi, faqat uxlaydi — uyg'otish bepul limitni sarflaydi).
+            await db.execute(text("SELECT 1"))
         reminders = await weekly.send_weekly_reminders(db)
     sent = 0
     if tg.enabled():

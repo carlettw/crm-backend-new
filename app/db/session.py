@@ -18,6 +18,10 @@ def make_engine(url: str | None = None):
     if url.startswith("postgresql"):
         # pre_ping har so'rovga qo'shimcha bazaga borib-kelish qo'shadi; o'rniga eski ulanishlar yangilanadi
         kw = dict(pool_size=5, max_overflow=5, pool_recycle=300)
+        if "neon.tech" in url:
+            # Neon bo'sh turganda uxlaydi va ulanishlarni uzadi — ishlatishdan oldin tekshiriladi
+            # (baza server bilan bir hududda, tekshiruv ~1 ms)
+            kw.update(pool_pre_ping=True, pool_recycle=240)
     return create_async_engine(url, connect_args=args, **kw)
 
 
